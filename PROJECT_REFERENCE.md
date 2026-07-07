@@ -46,8 +46,9 @@ Legacy `#/login` redirects to dashboard when already signed in.
 
 ## Branding
 
-- Generic white-label demo — **no third-party bank or vendor brands or trademarks**
-- Logo: `assets/your-brand-logo.png`
+- ACME Lettings demo branding
+- Logo: `assets/image.png`
+- Favicon: `assets/icon.png`
 - CSS design tokens: `--portal-*` in `styles/main.css`
 
 ---
