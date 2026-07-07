@@ -14,6 +14,14 @@ import {
   formatPercent,
   formatInterestRate,
   hasDisplayValue,
+  computePropertyDataCompleteness,
+  countPropertyAlerts,
+  countPropertyOptimisationOpportunities,
+  getPropertyAlertRoute,
+  getPropertyEnvironmentalRisks,
+  hasEnvironmentalRiskAlert,
+  isRiskWorsened,
+  getPropertyLettingAgent,
   computePortfolioMetrics,
   enrichPropertyWithAvm,
   enrichProperties,
@@ -81,25 +89,58 @@ const PROPERTY_TABS = [
   { id: 'financials', label: 'Financials' },
   { id: 'risk', label: 'Risk assessment' },
   { id: 'esg', label: 'ESG & Renovation' },
-  { id: 'market-trends', label: 'Market trends' },
-  { id: 'market-demand', label: 'Market demand' },
+  { id: 'local-market', label: 'Local market profile' },
 ];
 
 const app = document.getElementById('app');
 let manualEntryErrors = {};
 let manualEntryDraft = {};
 let pendingBulkImport = null;
+let pendingBulkImportSuccess = null;
 let marketplaceEpcFilter = 'all';
 let marketplaceInvestorClubFilter = 'all';
 
-const BRAND_LOGO_PATH = 'assets/your-brand-logo.png';
+const BRAND_LOGO_PATH = 'assets/image.png';
+const BRAND_ICON_PATH = 'assets/icon.png';
+const DATALOFT_LOGO_PATH = 'assets/dataloft-logo.png';
+const WHENFRESH_LOGO_PATH = 'assets/WF.png';
 
-function renderPortalLogo({ height = 28, className = 'portal-logo' } = {}) {
-  return `<img src="${BRAND_LOGO_PATH}" alt="Your Brand" class="${className}" height="${height}">`;
+function renderPortalLogo({ height = 32, className = 'portal-logo' } = {}) {
+  return `<img src="${BRAND_LOGO_PATH}" alt="ACME Lettings" class="${className}" height="${height}">`;
 }
 
 function renderPortalIcon({ height = 20, className = 'portal-logo portal-logo--icon' } = {}) {
-  return `<img src="${BRAND_LOGO_PATH}" alt="" class="${className}" height="${height}" aria-hidden="true">`;
+  return `<img src="${BRAND_ICON_PATH}" alt="" class="${className}" height="${height}" aria-hidden="true">`;
+}
+
+function renderDataloftLogo({ className = 'dataloft-logo', height = 20 } = {}) {
+  return `<img src="${DATALOFT_LOGO_PATH}" alt="dataloft by PriceHubble" class="${className}" height="${height}">`;
+}
+
+function renderWhenfreshLogo({ className = 'whenfresh-logo', height = 20 } = {}) {
+  return `<img src="${WHENFRESH_LOGO_PATH}" alt="whenfresh, a PriceHubble company" class="${className}" height="${height}">`;
+}
+
+function renderPartnerDivider() {
+  return '<span class="partner-divider" aria-hidden="true">|</span>';
+}
+
+function renderPropertyTabLabel(tab) {
+  if (tab.id === 'local-market') {
+    return `${renderDataloftLogo({ className: 'dataloft-logo dataloft-logo--tab', height: 21 })}${renderPartnerDivider()}${escapeHtml(tab.label)}`;
+  }
+  if (tab.id === 'risk') {
+    return `${renderWhenfreshLogo({ className: 'whenfresh-logo whenfresh-logo--tab', height: 21 })}${renderPartnerDivider()}${escapeHtml(tab.label)}`;
+  }
+  return escapeHtml(tab.label);
+}
+
+function renderPropertyTabClass(tab, activeTabId) {
+  const classes = ['property-tabs__tab'];
+  if (tab.id === activeTabId) classes.push('property-tabs__tab--active');
+  if (tab.id === 'local-market') classes.push('property-tabs__tab--dataloft');
+  if (tab.id === 'risk') classes.push('property-tabs__tab--whenfresh');
+  return classes.join(' ');
 }
 
 const RENTAL_EVIDENCE_REPORT_PATH = 'assets/rental-evidence-report.png';
@@ -123,7 +164,7 @@ function renderDataloftReportButton() {
   return `
     <button type="button" class="btn btn-apply btn-order-report" data-action="open-rental-report">
       <span class="btn-apply__logo">
-        <img src="assets/dataloft-logo.png" alt="" class="btn-order-report__logo" width="120" height="40">
+        <img src="${DATALOFT_LOGO_PATH}" alt="" class="btn-order-report__logo" width="120" height="40">
       </span>
       <span class="btn-apply__divider" aria-hidden="true">|</span>
       <span class="btn-apply__label">ORDER RENTAL EVIDENCE REPORT</span>
@@ -154,6 +195,202 @@ let draftPortfolio = state.draftPortfolio || { name: '', properties: [] };
 
 function navigate(path) {
   window.location.hash = path;
+}
+
+const INVESTMENT_GOAL_OPTIONS = {
+  shortTermPriority: [
+    'Buy more property / expand',
+    'Hold steady and optimise what I have',
+    'Refinance or release equity',
+    'Renovate or improve existing properties',
+    'Improve rental income / reduce voids',
+    'Sell one or more properties',
+    'Not sure yet',
+  ],
+  longTermDirection: [
+    'Significantly larger (more units or value)',
+    'About the same size, running smoothly',
+    'Smaller / partially exited',
+    'Fully exited / sold up',
+    'Restructured (e.g. limited company, different asset mix)',
+    'Undecided',
+  ],
+  ultimateGoal: [
+    'Supplement my income',
+    'Replace my main income',
+    'Fund my retirement',
+    'Build family wealth / a legacy',
+    'Grow and sell for profit',
+    'I\'m not sure yet',
+  ],
+  investorPriority: [
+    'Monthly rental income (yield)',
+    'Long-term capital growth',
+    'A balance of both',
+    'Tax efficiency',
+    'I\'m not sure yet',
+  ],
+  riskAppetite: [
+    'Cautious — preserve capital',
+    'Balanced',
+    'Growth-focused — comfortable with more risk',
+    'Prefer not to say',
+  ],
+  fundingPlan: [
+    'Cash',
+    'Mortgages / leverage',
+    'Releasing equity from existing properties',
+    'Not planning to buy right now',
+    'I\'m not sure yet',
+  ],
+  handsOn: [
+    'Self-manage everything',
+    'Somewhat involved',
+    'Mostly hands-off (use agents)',
+    'Prefer not to say',
+  ],
+};
+
+function getInvestmentGoals() {
+  const saved = state.investmentGoals || {};
+  return {
+    shortTermPriority: saved.shortTermPriority || '',
+    longTermDirection: saved.longTermDirection || '',
+    ultimateGoal: saved.ultimateGoal || '',
+    investorPriority: saved.investorPriority || '',
+    riskAppetite: saved.riskAppetite || '',
+    fundingPlan: saved.fundingPlan || '',
+    handsOn: saved.handsOn || '',
+  };
+}
+
+function renderInvestmentGoalsField(id, label, name, options, selectedValue, { optional = false } = {}) {
+  const optionalMark = optional ? ' <span class="form-field__optional">(optional)</span>' : '';
+  return `
+    <div class="form-field">
+      <label for="${id}">${escapeHtml(label)}${optionalMark}</label>
+      <select id="${id}" name="${name}">${renderSelectOptions(options, selectedValue)}</select>
+    </div>
+  `;
+}
+
+function renderInvestmentGoalsModal() {
+  const goals = getInvestmentGoals();
+
+  return `
+    <div class="modal" id="investment-goals-modal" hidden>
+      <div class="modal__backdrop" data-action="close-investment-goals"></div>
+      <div class="modal__panel modal__panel--wide investment-goals-modal" role="dialog" aria-labelledby="investment-goals-title" aria-modal="true">
+        <h2 class="modal__title" id="investment-goals-title">My investment goals</h2>
+        <p class="modal__intro">Tell us about your plans so we can tailor optimisation suggestions. You can update these at any time.</p>
+        <form id="investment-goals-form" class="modal__form investment-goals-form">
+          <section class="investment-goals-section" aria-labelledby="investment-goals-short-term">
+            <h3 class="investment-goals-section__title" id="investment-goals-short-term">Now — short-term (next 12 months)</h3>
+            ${renderInvestmentGoalsField(
+    'goal-short-term-priority',
+    'What\'s your main priority for your portfolio over the next 12 months?',
+    'shortTermPriority',
+    INVESTMENT_GOAL_OPTIONS.shortTermPriority,
+    goals.shortTermPriority,
+  )}
+          </section>
+
+          <section class="investment-goals-section" aria-labelledby="investment-goals-long-term">
+            <h3 class="investment-goals-section__title" id="investment-goals-long-term">Later — long-term (5+ years)</h3>
+            ${renderInvestmentGoalsField(
+    'goal-long-term-direction',
+    'Where do you want your portfolio to be in 5+ years?',
+    'longTermDirection',
+    INVESTMENT_GOAL_OPTIONS.longTermDirection,
+    goals.longTermDirection,
+  )}
+            ${renderInvestmentGoalsField(
+    'goal-ultimate-goal',
+    'What\'s the ultimate goal for this portfolio?',
+    'ultimateGoal',
+    INVESTMENT_GOAL_OPTIONS.ultimateGoal,
+    goals.ultimateGoal,
+  )}
+          </section>
+
+          <section class="investment-goals-section" aria-labelledby="investment-goals-profiling">
+            <h3 class="investment-goals-section__title" id="investment-goals-profiling">Your investor profile</h3>
+            ${renderInvestmentGoalsField(
+    'goal-investor-priority',
+    'What matters most to you as an investor?',
+    'investorPriority',
+    INVESTMENT_GOAL_OPTIONS.investorPriority,
+    goals.investorPriority,
+  )}
+            ${renderInvestmentGoalsField(
+    'goal-risk-appetite',
+    'How would you describe your risk appetite?',
+    'riskAppetite',
+    INVESTMENT_GOAL_OPTIONS.riskAppetite,
+    goals.riskAppetite,
+  )}
+            ${renderInvestmentGoalsField(
+    'goal-funding-plan',
+    'How do you plan to fund future purchases?',
+    'fundingPlan',
+    INVESTMENT_GOAL_OPTIONS.fundingPlan,
+    goals.fundingPlan,
+  )}
+            ${renderInvestmentGoalsField(
+    'goal-hands-on',
+    'How hands-on do you want to be?',
+    'handsOn',
+    INVESTMENT_GOAL_OPTIONS.handsOn,
+    goals.handsOn,
+    { optional: true },
+  )}
+          </section>
+
+          <div class="modal__actions">
+            <button type="button" class="btn btn-secondary" data-action="close-investment-goals">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function bindInvestmentGoalsModal() {
+  const modal = document.getElementById('investment-goals-modal');
+  if (!modal) return;
+
+  const openModal = () => {
+    modal.hidden = false;
+  };
+
+  const closeModal = () => {
+    modal.hidden = true;
+  };
+
+  document.querySelectorAll('[data-action="open-investment-goals"]').forEach((button) => {
+    button.addEventListener('click', openModal);
+  });
+
+  modal.querySelectorAll('[data-action="close-investment-goals"]').forEach((element) => {
+    element.addEventListener('click', closeModal);
+  });
+
+  document.getElementById('investment-goals-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.target);
+    state.investmentGoals = {
+      shortTermPriority: String(formData.get('shortTermPriority') || '').trim(),
+      longTermDirection: String(formData.get('longTermDirection') || '').trim(),
+      ultimateGoal: String(formData.get('ultimateGoal') || '').trim(),
+      investorPriority: String(formData.get('investorPriority') || '').trim(),
+      riskAppetite: String(formData.get('riskAppetite') || '').trim(),
+      fundingPlan: String(formData.get('fundingPlan') || '').trim(),
+      handsOn: String(formData.get('handsOn') || '').trim(),
+    };
+    saveState(state);
+    closeModal();
+  });
 }
 
 function getRoute() {
@@ -267,13 +504,7 @@ function propertyDemoSeed(property) {
       { label: '01.03.2025', value: avm, pct: '-2.30%' },
     ],
     epcImprovementCost: 6500 + (seed % 8) * 1750,
-    environmentalRisks: [
-      { label: 'Flood - River Sea', level: ['low', 'low', 'medium', 'high'][seed % 4] },
-      { label: 'Flood - Surface Water', level: ['low', 'medium', 'medium', 'low'][(seed + 1) % 4] },
-      { label: 'Chancel Liability', level: ['low', 'low', 'low', 'medium'][(seed + 2) % 4] },
-      { label: 'Subsidence', level: ['low', 'medium', 'low', 'low'][(seed + 3) % 4] },
-      { label: 'Cladding', level: ['low', 'low', 'low', 'medium'][seed % 4] },
-    ],
+    environmentalRisks: getPropertyEnvironmentalRisks(property),
     averageAskingPrice: Math.round(avm * (1.01 + (seed % 4) * 0.008)),
     askingPriceChange3m: Number((-0.6 + (seed % 6) * 0.35).toFixed(1)),
     askingPriceTrend: [
@@ -328,6 +559,58 @@ function propertyDemoSeed(property) {
         label: `£${mid + offset * 50}k`,
         value: 8 + ((seed + i * 2) % 22),
       }));
+    })(),
+    localMarket: (() => {
+      const monthLabels = ['Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'];
+      const baseRent = marketRent || 1200;
+      const rentPsfBase = baseRent / sqft;
+
+      return {
+        listedProperties1mi: 118 + (seed % 48),
+        newRentalListingsMonth: 14 + (seed % 11),
+        rentalAvailabilityByMonth: monthLabels.map((label, i) => ({
+          label,
+          value: 72 + (seed % 20) + Math.round(Math.sin(i * 0.9 + seed) * 14) + i * 2,
+        })),
+        avgDaysOnMarketRentedMonth: 19 + (seed % 14),
+        rentChangeProportion: [
+          { label: 'No rent change', value: 58 + (seed % 8), color: '#2D95EC' },
+          { label: 'Rent reduced', value: 14 + (seed % 6), color: '#9eb8d4' },
+          { label: 'Rent increased', value: 18 + (seed % 7), color: '#1a6bb5' },
+        ],
+        newRentalsByType: [
+          { label: 'Detached', value: 8 + (seed % 6) },
+          { label: 'Semi-det.', value: 14 + (seed % 8) },
+          { label: 'Terraced', value: 22 + (seed % 10) },
+          { label: 'Flats', value: 36 + (seed % 12) },
+        ],
+        avgRentByBedrooms: [1, 2, 3, 4].map((beds, i) => ({
+          label: `${beds} bed`,
+          current: Math.round(baseRent * (0.72 + beds * 0.18) + (seed % 40)),
+          prior: Math.round(baseRent * (0.68 + beds * 0.17) + (seed % 35)),
+        })),
+        rentPsfTrend: monthLabels.map((label, i) => ({
+          label,
+          value: Number((rentPsfBase * (0.94 + i * 0.006 + (seed % 5) * 0.002)).toFixed(2)),
+        })),
+        newRentalsByPriceBand: [
+          { label: '<£1k', value: 12 + (seed % 8) },
+          { label: '£1–1.5k', value: 28 + (seed % 10) },
+          { label: '£1.5–2k', value: 24 + (seed % 9) },
+          { label: '£2–2.5k', value: 16 + (seed % 7) },
+          { label: '£2.5k+', value: 8 + (seed % 5) },
+        ],
+        grossYieldRolling12m: monthLabels.map((label, i) => ({
+          label,
+          value: Number((4.6 + (seed % 6) * 0.15 + i * 0.04 + Math.sin(i * 0.7) * 0.12).toFixed(2)),
+        })),
+        grossYieldByType: [
+          { label: 'Detached', value: Number((4.8 + (seed % 4) * 0.1).toFixed(1)) },
+          { label: 'Semi-det.', value: Number((5.1 + (seed % 3) * 0.12).toFixed(1)) },
+          { label: 'Terraced', value: Number((5.4 + (seed % 5) * 0.08).toFixed(1)) },
+          { label: 'Flats', value: Number((5.8 + (seed % 4) * 0.11).toFixed(1)) },
+        ],
+      };
     })(),
   };
 }
@@ -551,7 +834,7 @@ function renderMissingIndicator() {
     <span class="missing-indicator" title="Missing data — update required" aria-label="Missing data, update required">
       <svg class="missing-indicator__icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
         <circle cx="9" cy="9" r="8"/>
-        <text x="9" y="12.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="Inter, sans-serif">!</text>
+        <text x="9" y="12.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="Oxygen, sans-serif">!</text>
       </svg>
       <span class="missing-indicator__label">update</span>
     </span>
@@ -592,6 +875,11 @@ function renderLineOccupancy(value) {
   return `<span class="badge ${isRented ? 'badge-green' : 'badge-amber'}">${escapeHtml(label)}</span>`;
 }
 
+function renderLineCompleteness(percent) {
+  const level = percent >= 75 ? 'high' : percent >= 50 ? 'medium' : 'low';
+  return `<span class="completeness-pill completeness-pill--${level}">${percent}%</span>`;
+}
+
 function renderDetailValue(value, type = 'text') {
   switch (type) {
     case 'currency':
@@ -609,20 +897,13 @@ function renderDetailValue(value, type = 'text') {
   }
 }
 
-function renderDetailRow(label, value, type = 'text') {
-  return `
-    <div class="detail-row">
-      <dt class="detail-row__label">${escapeHtml(label)}</dt>
-      <dd class="detail-row__value">${renderDetailValue(value, type)}</dd>
-    </div>
-  `;
-}
-
 function renderPropertyHero(property) {
   const seed = propertyDemoSeed(property);
   const avm = Number(property.avmValue) || 0;
-  const grossYield = avm > 0 && property.marketRent
-    ? ((Number(property.marketRent) * 12) / avm) * 100
+  const rentAgreed = getAchievedRentTotal(property);
+  const rentForYield = rentAgreed > 0 ? rentAgreed : Number(property.marketRent) || 0;
+  const grossYield = avm > 0 && rentForYield
+    ? ((rentForYield * 12) / avm) * 100
     : null;
 
   return `
@@ -630,12 +911,12 @@ function renderPropertyHero(property) {
       <div class="property-hero__main">
         <p class="property-hero__ref">${escapeHtml(property.titleRef)}</p>
         <h1 class="property-hero__address">${escapeHtml(formatAddress(property))}</h1>
-        <p class="property-hero__meta">${seed.bedrooms} bedroom${seed.bedrooms === 1 ? '' : 's'} · ${seed.floors} floors · Floor ${seed.floorNumber}</p>
+        <p class="property-hero__meta">${seed.bedrooms} bedroom${seed.bedrooms === 1 ? '' : 's'} · ${escapeHtml(seed.propertyType)} · EPC ${seed.epcRating}</p>
       </div>
       <div class="property-hero__metrics">
         <div class="property-hero__metric">
           <span class="property-hero__metric-value">${renderLineCurrencyPlain(property.avmValue)}</span>
-          <span class="property-hero__metric-label">Estimated market value</span>
+          <span class="property-hero__metric-label">Estimated value</span>
         </div>
         <div class="property-hero__metric">
           <span class="property-hero__metric-value">${renderLineCurrency(property.marketRent)}</span>
@@ -657,10 +938,16 @@ function renderPropertyHero(property) {
 const OVERVIEW_ICONS = {
   key: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--portal-primary)"/><path d="M12 6l1.2 3.6H17l-3 2.2 1.1 3.5L12 13.8 8.9 15.3 10 11.8 7 9.6h3.8L12 6z" fill="#fff"/></svg>`,
   rent: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--portal-primary)"/><path d="M12 7v5l3.5 2" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>`,
-  sale: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--portal-primary)"/><path d="M8 9h8l-1 8H9l-1-8zm1-2h6l.5 2h-7l.5-2z" fill="#fff"/></svg>`,
+  value: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--portal-primary)"/><path d="M12 5l7 5.2V18H5V10.2L12 5zm0 2.4L7 10.6V16h10v-5.4l-5-3.2z" fill="#fff"/></svg>`,
   financials: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--portal-primary)"/><path d="M7 9h10v2H7V9zm0 4h6v2H7v-2z" fill="#fff"/></svg>`,
   mortgage: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="var(--portal-primary)"/><path d="M12 7a5 5 0 100 10 5 5 0 000-10zm0 2v3l2 1" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>`,
 };
+
+function formatDaysOnMarket(days) {
+  const value = Number(days);
+  if (!Number.isFinite(value) || value <= 0) return '0 days';
+  return value === 1 ? '1 day' : `${value} days`;
+}
 
 function formatOverviewAddress(property) {
   return `${property.street} ${property.propertyNumber}, ${property.postcode} ${property.city}`;
@@ -689,46 +976,6 @@ function renderFinancialOrMissing(hasValue, content) {
   return typeof content === 'function' ? content() : content;
 }
 
-function renderOverviewTrendChart(points) {
-  const width = 720;
-  const height = 180;
-  const padX = 36;
-  const padY = 28;
-  const values = points.map((p) => p.value);
-  const min = Math.min(...values) * 0.96;
-  const max = Math.max(...values) * 1.04;
-  const range = max - min || 1;
-
-  const coords = points.map((point, index) => {
-    const x = padX + (index / (points.length - 1)) * (width - padX * 2);
-    const y = height - padY - ((point.value - min) / range) * (height - padY * 2);
-    return { x, y, ...point };
-  });
-
-  const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x} ${c.y}`).join(' ');
-  const areaPath = `${linePath} L ${coords[coords.length - 1].x} ${height - padY} L ${coords[0].x} ${height - padY} Z`;
-
-  return `
-    <div class="overview-chart">
-      <svg viewBox="0 0 ${width} ${height}" class="overview-chart__svg" preserveAspectRatio="none">
-        <path d="${areaPath}" class="overview-chart__area"/>
-        <path d="${linePath}" class="overview-chart__line"/>
-        ${coords.map((c) => `
-          <circle cx="${c.x}" cy="${c.y}" r="4" class="overview-chart__dot"/>
-        `).join('')}
-      </svg>
-      <div class="overview-chart__labels">
-        ${coords.map((c) => `
-          <div class="overview-chart__point" style="left:${(c.x / width) * 100}%">
-            <span class="overview-chart__amount">${escapeHtml(c.pct)}</span>
-            <span class="overview-chart__date">${escapeHtml(c.label)}</span>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `;
-}
-
 function renderOccupancyBadge(occupancy) {
   const label = occupancy === 'Let' ? 'Rented' : (occupancy || 'Vacant');
   const isVacant = label === 'Vacant';
@@ -746,10 +993,10 @@ function renderPropertyToolbar(index, activeTabId) {
         <div class="property-tabs__scroll">
           ${PROPERTY_TABS.map((tab) => `
             <a
-              class="property-tabs__tab ${tab.id === activeTabId ? 'property-tabs__tab--active' : ''}"
+              class="${renderPropertyTabClass(tab, activeTabId)}"
               href="#/portfolio/property/${index}/${tab.id}"
               ${tab.id === activeTabId ? 'aria-current="page"' : ''}
-            >${escapeHtml(tab.label)}</a>
+            >${renderPropertyTabLabel(tab)}</a>
           `).join('')}
         </div>
       </nav>
@@ -757,7 +1004,23 @@ function renderPropertyToolbar(index, activeTabId) {
   `;
 }
 
-function renderPropertyOverviewTab(property) {
+function renderPropertyOverviewBadges(property, index) {
+  const opportunityBadge = renderLineOpportunityBadge(countPropertyOptimisationOpportunities(property), index);
+  const alertBadge = renderLineAlertBadge(property, index);
+  if (!opportunityBadge && !alertBadge) return '';
+
+  return `
+    <section class="property-overview-badges" aria-label="Opportunities and alerts">
+      <div class="property-overview-badges__header">
+        <h2 class="property-overview-badges__title">Opportunities &amp; alerts</h2>
+        <p class="property-overview-badges__intro">Review items that may need your attention for this property.</p>
+      </div>
+      <div class="line-badges property-overview-badges__list">${opportunityBadge}${alertBadge}</div>
+    </section>
+  `;
+}
+
+function renderPropertyOverviewTab(property, index) {
   const seed = propertyDemoSeed(property);
   const details = getPropertyOverviewDetails(property);
   const marketRent = Number(property.marketRent) || 0;
@@ -768,7 +1031,9 @@ function renderPropertyOverviewTab(property) {
 
   return `
     <div class="property-tab-panel property-tab-panel--overview">
-      <section class="overview-section">
+      ${renderPropertyOverviewBadges(property, index)}
+
+      <section class="overview-section overview-section--compact">
         <div class="overview-section__header">
           <div class="overview-section__title-wrap">
             <span class="overview-section__icon">${OVERVIEW_ICONS.key}</span>
@@ -783,22 +1048,15 @@ function renderPropertyOverviewTab(property) {
           </div>
         </div>
 
-        <p class="overview-address">${escapeHtml(formatOverviewAddress(property))}</p>
-
-        <div class="overview-attrs">
+        <div class="overview-attrs overview-attrs--compact">
           ${renderOverviewAttr('Type', escapeHtml(details.propertyType))}
-          ${renderOverviewAttr('Number of bedrooms', details.bedrooms)}
-          ${renderOverviewAttr('Current → Potential EPC', `${details.epcRating} → ${details.epcPotential}`)}
-          ${renderOverviewAttr('Net living area (sq.ft)', Number(details.sqft).toLocaleString('en-GB'))}
-          ${renderOverviewAttr('Built', details.builtYear)}
-          ${renderOverviewAttr('Leasehold?', details.leasehold)}
-          ${renderOverviewAttr('Number of floors', details.floors)}
-          ${renderOverviewAttr('Floor number', details.floorNumber)}
-          ${renderOverviewAttr('New building', details.newBuilding)}
+          ${renderOverviewAttr('Bedrooms', details.bedrooms)}
+          ${renderOverviewAttr('EPC', `${details.epcRating} → ${details.epcPotential}`)}
+          ${renderOverviewAttr('Net living area', `${Number(details.sqft).toLocaleString('en-GB')} sq.ft`)}
         </div>
       </section>
 
-      <section class="overview-section">
+      <section class="overview-section overview-section--compact">
         <div class="overview-section__header">
           <div class="overview-section__title-wrap">
             <span class="overview-section__icon">${OVERVIEW_ICONS.rent}</span>
@@ -808,7 +1066,7 @@ function renderPropertyOverviewTab(property) {
 
         <div class="overview-metrics">
           <div class="overview-metric">
-            <span class="overview-metric__label">Rent pcm</span>
+            <span class="overview-metric__label">Achieved rent</span>
             <span class="overview-metric__value">${marketRent > 0 ? formatCurrency(rentPcm) : renderMissingIndicator()}</span>
           </div>
           <div class="overview-metric">
@@ -816,7 +1074,7 @@ function renderPropertyOverviewTab(property) {
             <span class="overview-metric__value">${marketRent > 0 ? `£${details.rentPerSqft}` : '—'}</span>
           </div>
           <div class="overview-metric">
-            <span class="overview-metric__label">Market rent</span>
+            <span class="overview-metric__label">Market rent range</span>
             <span class="overview-metric__value">${marketRent > 0 ? `${formatCurrency(seed.rentLow)} - ${formatCurrency(seed.rentHigh)}` : renderMissingIndicator()}</span>
           </div>
           <div class="overview-metric">
@@ -825,59 +1083,45 @@ function renderPropertyOverviewTab(property) {
           </div>
         </div>
 
-        <div class="overview-market-box">
+        <div class="overview-market-box overview-market-box--compact">
           <div class="overview-market-box__item">
             <span class="overview-market-box__dot"></span>
             <span>Similar properties: <strong>+ ${seed.similarRent}</strong></span>
           </div>
-          <p class="overview-market-box__text">On average, similar properties stay on the market for <strong>${seed.rentDaysOnMarket} day(s)</strong></p>
+          <p class="overview-market-box__text">On average, similar properties stay on the market for <strong>${formatDaysOnMarket(seed.rentDaysOnMarket)}</strong></p>
         </div>
-
-        <h3 class="overview-subtitle">Change in average rents</h3>
-        <div class="overview-trend-meta">
-          <span>Last quarter's median rent: <strong>${formatCurrency(seed.medianRent)}</strong></span>
-          <span>Last 2 years % change: <strong class="${seed.rentChangePct < 0 ? 'overview-trend-meta--down' : ''}">${seed.rentChangePct}%</strong></span>
-        </div>
-        ${renderOverviewTrendChart(seed.rentTrend)}
       </section>
 
-      <section class="overview-section">
+      <section class="overview-section overview-section--compact">
         <div class="overview-section__header">
           <div class="overview-section__title-wrap">
-            <span class="overview-section__icon">${OVERVIEW_ICONS.sale}</span>
-            <h2 class="overview-section__title">Sale</h2>
+            <span class="overview-section__icon">${OVERVIEW_ICONS.value}</span>
+            <h2 class="overview-section__title">Value</h2>
           </div>
         </div>
 
         <div class="overview-metrics overview-metrics--3">
           <div class="overview-metric">
-            <span class="overview-metric__label">Sale price</span>
+            <span class="overview-metric__label">Estimated value</span>
             <span class="overview-metric__value">${avm > 0 ? formatCurrency(avm) : renderMissingIndicator()}</span>
           </div>
           <div class="overview-metric">
-            <span class="overview-metric__label">Sale per sq.ft</span>
+            <span class="overview-metric__label">Value per sq.ft</span>
             <span class="overview-metric__value">${avm > 0 ? `£${seed.salePerSqft} /sq.ft` : '—'}</span>
           </div>
           <div class="overview-metric">
-            <span class="overview-metric__label">Market sale</span>
-            <span class="overview-metric__value">${avm > 0 ? `${formatCurrency(Math.round(avm * 0.92))} - ${formatCurrency(Math.round(avm * 1.06))}` : '£ - £'}</span>
+            <span class="overview-metric__label">Market value range</span>
+            <span class="overview-metric__value">${avm > 0 ? `${formatCurrency(Math.round(avm * 0.92))} - ${formatCurrency(Math.round(avm * 1.06))}` : '—'}</span>
           </div>
         </div>
 
-        <div class="overview-market-box">
+        <div class="overview-market-box overview-market-box--compact">
           <div class="overview-market-box__item">
             <span class="overview-market-box__dot"></span>
             <span>Similar properties: <strong>+ ${seed.similarSale}</strong></span>
           </div>
-          <p class="overview-market-box__text">On average, similar properties stay on the market for <strong>${seed.saleDaysOnMarket} day(s)</strong></p>
+          <p class="overview-market-box__text">On average, similar properties stay on the market for <strong>${formatDaysOnMarket(seed.saleDaysOnMarket)}</strong></p>
         </div>
-
-        <h3 class="overview-subtitle">Change in average sales prices</h3>
-        <div class="overview-trend-meta">
-          <span>Last quarter's median sale: <strong>${formatCurrency(seed.medianSale)}</strong></span>
-          <span>Last 2 years % change: <strong class="${seed.saleChangePct < 0 ? 'overview-trend-meta--down' : ''}">${seed.saleChangePct}%</strong></span>
-        </div>
-        ${renderOverviewTrendChart(seed.saleTrend)}
       </section>
 
       <section class="overview-section investor-club-section">
@@ -1402,26 +1646,66 @@ const CARD_LAYOUT_TABS = new Set([
   'financials',
   'risk',
   'esg',
-  'market-trends',
-  'market-demand',
+  'local-market',
 ]);
 
-function renderTrafficLightRisk(label, level) {
+function renderSingleTrafficLight(level) {
   const levels = ['low', 'medium', 'high'];
   const active = levels.includes(level) ? level : 'low';
 
   return `
+    <span
+      class="risk-traffic-light risk-traffic-light--${active} risk-traffic-light--active"
+      title="${active.charAt(0).toUpperCase() + active.slice(1)}"
+    ></span>
+  `;
+}
+
+function renderRiskChangeColumn(risk) {
+  const { previousLevel, level } = risk;
+  if (!previousLevel || previousLevel === level) {
+    return '<span class="risk-traffic-change risk-traffic-change--none">No change</span>';
+  }
+
+  const alertBadge = isRiskWorsened(previousLevel, level)
+    ? '<span class="alert-badge alert-badge--label">Alert</span>'
+    : '';
+
+  return `
+    <div class="risk-traffic-change">
+      ${renderSingleTrafficLight(previousLevel)}
+      <span class="risk-traffic-change__arrow" aria-hidden="true">→</span>
+      ${renderSingleTrafficLight(level)}
+      ${alertBadge}
+    </div>
+  `;
+}
+
+function renderTrafficLightRisk(risk) {
+  const levels = ['low', 'medium', 'high'];
+  const active = levels.includes(risk.level) ? risk.level : 'low';
+
+  return `
     <div class="risk-traffic-row">
-      <span class="risk-traffic-row__label">${escapeHtml(label)}</span>
-      <div class="risk-traffic-lights" role="img" aria-label="${escapeHtml(label)}: ${active}">
-        ${levels.map((l) => `
-          <span
-            class="risk-traffic-light risk-traffic-light--${l}${l === active ? ' risk-traffic-light--active' : ''}"
-            title="${l.charAt(0).toUpperCase() + l.slice(1)}"
-          ></span>
-        `).join('')}
+      <div class="risk-traffic-row__col risk-traffic-row__col--risk">
+        <span class="risk-traffic-row__label">${escapeHtml(risk.label)}</span>
       </div>
-      <span class="risk-traffic-row__level risk-traffic-row__level--${active}">${active.charAt(0).toUpperCase() + active.slice(1)}</span>
+      <div class="risk-traffic-row__col risk-traffic-row__col--current">
+        <div class="risk-traffic-current">
+          <div class="risk-traffic-lights" role="img" aria-label="${escapeHtml(risk.label)}: ${active}">
+            ${levels.map((l) => `
+              <span
+                class="risk-traffic-light risk-traffic-light--${l}${l === active ? ' risk-traffic-light--active' : ''}"
+                title="${l.charAt(0).toUpperCase() + l.slice(1)}"
+              ></span>
+            `).join('')}
+          </div>
+          <span class="risk-traffic-row__level risk-traffic-row__level--${active}">${active.charAt(0).toUpperCase() + active.slice(1)}</span>
+        </div>
+      </div>
+      <div class="risk-traffic-row__col risk-traffic-row__col--change">
+        ${renderRiskChangeColumn(risk)}
+      </div>
     </div>
   `;
 }
@@ -1467,6 +1751,7 @@ function renderSimpleBarChart(bars, options = {}) {
   const maxVal = Math.max(...bars.map((b) => b.value), 1);
   const slot = (width - padX * 2) / bars.length;
   const barWidth = slot * 0.55;
+  const valueSuffix = options.valueSuffix || '';
 
   return `
     <div class="analytics-chart">
@@ -1475,12 +1760,162 @@ function renderSimpleBarChart(bars, options = {}) {
     const barH = (bar.value / maxVal) * (height - padY * 2);
     const x = padX + i * slot + (slot - barWidth) / 2;
     const y = height - padY - barH;
+    const valueLabel = options.showValues
+      ? `<text x="${x + barWidth / 2}" y="${y - 6}" text-anchor="middle" class="analytics-chart__value-label">${escapeHtml(String(bar.value))}${valueSuffix}</text>`
+      : '';
     return `
+            ${valueLabel}
             <rect x="${x}" y="${y}" width="${barWidth}" height="${barH}" rx="4" class="analytics-chart__bar"/>
             <text x="${x + barWidth / 2}" y="${height - 12}" text-anchor="middle" class="analytics-chart__axis-label">${escapeHtml(bar.label)}</text>
           `;
   }).join('')}
       </svg>
+    </div>
+  `;
+}
+
+function renderGroupedBarChart(groups, options = {}) {
+  const width = options.width || 680;
+  const height = options.height || 240;
+  const padX = 48;
+  const padY = 44;
+  const series = options.series || [
+    { key: 'current', className: 'analytics-chart__bar analytics-chart__bar--primary' },
+    { key: 'prior', className: 'analytics-chart__bar analytics-chart__bar--secondary' },
+  ];
+  const maxVal = Math.max(...groups.flatMap((group) => series.map((item) => group[item.key] || 0)), 1);
+  const groupSlot = (width - padX * 2) / groups.length;
+  const clusterWidth = groupSlot * 0.72;
+  const barWidth = clusterWidth / series.length - 4;
+  const formatValue = options.formatValue || ((value) => formatCurrency(value));
+
+  return `
+    <div class="analytics-chart">
+      ${options.legend ? `
+        <div class="analytics-chart__legend">
+          ${options.legend.map((item) => `
+            <span class="analytics-chart__legend-item">
+              <span class="analytics-chart__legend-swatch analytics-chart__legend-swatch--${item.tone}"></span>
+              ${escapeHtml(item.label)}
+            </span>
+          `).join('')}
+        </div>
+      ` : ''}
+      <svg viewBox="0 0 ${width} ${height}" class="analytics-chart__svg" preserveAspectRatio="xMidYMid meet">
+        ${groups.map((group, groupIndex) => {
+    const clusterX = padX + groupIndex * groupSlot + (groupSlot - clusterWidth) / 2;
+    return series.map((item, seriesIndex) => {
+      const value = group[item.key] || 0;
+      const barH = (value / maxVal) * (height - padY * 2);
+      const x = clusterX + seriesIndex * (barWidth + 4);
+      const y = height - padY - barH;
+      return `
+              <rect x="${x}" y="${y}" width="${barWidth}" height="${barH}" rx="4" class="${item.className}"/>
+              <text x="${x + barWidth / 2}" y="${y - 6}" text-anchor="middle" class="analytics-chart__value-label">${escapeHtml(formatValue(value))}</text>
+            `;
+    }).join('');
+  }).join('')}
+        ${groups.map((group, groupIndex) => {
+    const clusterX = padX + groupIndex * groupSlot + groupSlot / 2;
+    return `<text x="${clusterX}" y="${height - 12}" text-anchor="middle" class="analytics-chart__axis-label">${escapeHtml(group.label)}</text>`;
+  }).join('')}
+      </svg>
+    </div>
+  `;
+}
+
+function renderSimplePieChart(slices, options = {}) {
+  const size = options.size || 280;
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = options.radius || 88;
+  const activeSlices = slices.filter((slice) => slice.value > 0);
+  const total = activeSlices.reduce((sum, slice) => sum + slice.value, 0);
+
+  if (!total) {
+    return '<p class="portfolio-chart-empty">No data available</p>';
+  }
+
+  let startAngle = -90;
+  const segments = activeSlices.map((slice) => {
+    const portion = slice.value / total;
+    const sweep = portion * 360;
+    const endAngle = startAngle + sweep;
+    const largeArc = sweep > 180 ? 1 : 0;
+    const start = polarToCartesian(cx, cy, radius, startAngle);
+    const end = polarToCartesian(cx, cy, radius, endAngle);
+    const path = `M ${cx} ${cy} L ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y} Z`;
+    const percent = Math.round(portion * 100);
+    const segment = `
+      <path d="${path}" fill="${slice.color}" class="analytics-chart__pie-segment">
+        <title>${escapeHtml(slice.label)}: ${percent}%</title>
+      </path>
+    `;
+    startAngle = endAngle;
+    return { segment, slice, percent };
+  });
+
+  return `
+    <div class="analytics-pie">
+      <svg viewBox="0 0 ${size} ${size}" class="analytics-chart__svg analytics-pie__svg" role="img" aria-label="${escapeHtml(options.ariaLabel || 'Distribution chart')}">
+        ${segments.map((item) => item.segment).join('')}
+      </svg>
+      <ul class="analytics-pie__legend">
+        ${segments.map(({ slice, percent }) => `
+          <li class="analytics-pie__legend-item">
+            <span class="analytics-pie__swatch" style="background:${slice.color}"></span>
+            <span>${escapeHtml(slice.label)}</span>
+            <strong>${percent}%</strong>
+          </li>
+        `).join('')}
+      </ul>
+    </div>
+  `;
+}
+
+function renderLocalMarketChartBlock(title, chartHtml, description = '') {
+  return `
+    <div class="local-market-chart-block">
+      <h3 class="local-market-chart-block__title">${escapeHtml(title)}</h3>
+      ${description ? `<p class="local-market-chart-block__desc">${escapeHtml(description)}</p>` : ''}
+      ${chartHtml}
+    </div>
+  `;
+}
+
+function renderLocalMarketSectionHeader(title) {
+  return `
+    <div class="overview-section__header">
+      <div class="overview-section__title-wrap overview-section__title-wrap--partner">
+        ${renderDataloftLogo({ className: 'dataloft-logo dataloft-logo--section', height: 30 })}
+        ${renderPartnerDivider()}
+        <h2 class="overview-section__title">${escapeHtml(title)}</h2>
+      </div>
+    </div>
+  `;
+}
+
+function renderRiskSectionHeader(title) {
+  return `
+    <div class="overview-section__header">
+      <div class="overview-section__title-wrap overview-section__title-wrap--partner">
+        ${renderWhenfreshLogo({ className: 'whenfresh-logo whenfresh-logo--section', height: 30 })}
+        ${renderPartnerDivider()}
+        <h2 class="overview-section__title">${escapeHtml(title)}</h2>
+      </div>
+    </div>
+  `;
+}
+
+function renderLocalMarketAnalyticsStats(stats) {
+  return `
+    <div class="analytics-stats">
+      ${stats.map((stat) => `
+        <div class="analytics-stat analytics-stat--dataloft">
+          <span class="analytics-stat__label">${escapeHtml(stat.label)}</span>
+          <span class="analytics-stat__value ${stat.tone ? `analytics-stat__value--${stat.tone}` : ''}">${stat.value}</span>
+        </div>
+      `).join('')}
     </div>
   `;
 }
@@ -1498,18 +1933,19 @@ function renderAnalyticsStats(stats) {
   `;
 }
 
-function renderPropertyRiskTab(property) {
-  const seed = propertyDemoSeed(property);
+function renderPropertyRiskTab(property, index) {
+  const environmentalRisks = getPropertyEnvironmentalRisks(property, { propertyIndex: index });
+  const insuranceAlertHtml = hasEnvironmentalRiskAlert(property, index)
+    ? renderRiskInsuranceAlertBanner()
+    : '';
 
   return `
     <div class="property-tab-panel property-tab-panel--overview">
+      ${insuranceAlertHtml}
+
       <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Risk assessment</h2>
-          </div>
-        </div>
-        <p class="property-tab-panel__intro">Environmental and property risks for this location.</p>
+        ${renderRiskSectionHeader('Risk assessment')}
+        <p class="property-tab-panel__intro">Environmental and property risks for this location, including recent changes.</p>
 
         <div class="risk-traffic-legend" aria-hidden="true">
           <span><span class="risk-traffic-light risk-traffic-light--low risk-traffic-light--active"></span> Low</span>
@@ -1518,7 +1954,12 @@ function renderPropertyRiskTab(property) {
         </div>
 
         <div class="risk-traffic-list">
-          ${seed.environmentalRisks.map((risk) => renderTrafficLightRisk(risk.label, risk.level)).join('')}
+          <div class="risk-traffic-list__header" aria-hidden="true">
+            <span class="risk-traffic-list__header-col">Risk</span>
+            <span class="risk-traffic-list__header-col">Current rating</span>
+            <span class="risk-traffic-list__header-col">Change</span>
+          </div>
+          ${environmentalRisks.map((risk) => renderTrafficLightRisk(risk)).join('')}
         </div>
       </section>
     </div>
@@ -1527,11 +1968,11 @@ function renderPropertyRiskTab(property) {
 
 function renderPropertyEsgTab(property, index) {
   const epc = getPropertyEpcDetails(property, { propertyIndex: index });
-  const epcOpportunityHtml = renderEsgImprovementOpportunity(property, index);
+  const epcRequirementHtml = renderEsgImprovementRequirement(property, index);
 
   return `
     <div class="property-tab-panel property-tab-panel--overview">
-      ${epcOpportunityHtml}
+      ${epcRequirementHtml}
 
       <section class="overview-section">
         <div class="overview-section__header">
@@ -1562,82 +2003,113 @@ function renderPropertyEsgTab(property, index) {
   `;
 }
 
-function renderPropertyMarketTrendsTab(property) {
+function renderPropertyLocalMarketTab(property) {
   const seed = propertyDemoSeed(property);
-  const changeTone = seed.askingPriceChange3m >= 0 ? 'up' : 'down';
+  const local = seed.localMarket;
+  const city = property.city || 'this area';
+
+  const newRentalsByTypeTotal = local.newRentalsByType.reduce((sum, item) => sum + item.value, 0);
+  const newRentalsByTypePct = local.newRentalsByType.map((item) => ({
+    label: item.label,
+    value: Number(((item.value / newRentalsByTypeTotal) * 100).toFixed(1)),
+  }));
+
+  const priceBandTotal = local.newRentalsByPriceBand.reduce((sum, item) => sum + item.value, 0);
+  const priceBandPct = local.newRentalsByPriceBand.map((item) => ({
+    label: item.label,
+    value: Number(((item.value / priceBandTotal) * 100).toFixed(1)),
+  }));
 
   return `
     <div class="property-tab-panel property-tab-panel--overview">
-      <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Change in average asking prices</h2>
-          </div>
-        </div>
-        ${renderAnalyticsStats([
-    { label: 'Average asking price', value: formatCurrency(seed.averageAskingPrice) },
+      <p class="property-tab-panel__intro">Local rental market insights within 1 mile of ${escapeHtml(city)}.</p>
+
+      <section class="overview-section overview-section--dataloft">
+        ${renderLocalMarketSectionHeader('Currently listed in the local area')}
+
+        ${renderLocalMarketAnalyticsStats([
     {
-      label: '% change over 3 months',
-      value: `${seed.askingPriceChange3m >= 0 ? '+' : ''}${seed.askingPriceChange3m}%`,
-      tone: changeTone,
+      label: 'Listed properties within 1 mile',
+      value: local.listedProperties1mi.toLocaleString('en-GB'),
+    },
+    {
+      label: 'New rental listings this month within 1 mile',
+      value: local.newRentalListingsMonth.toLocaleString('en-GB'),
+    },
+    {
+      label: 'Average days on market for properties rented this month within 1 mile',
+      value: `${local.avgDaysOnMarketRentedMonth} days`,
     },
   ])}
-        ${renderSimpleLineChart(seed.askingPriceTrend)}
+
+        <div class="local-market-charts">
+          ${renderLocalMarketChartBlock(
+    'Rental properties available by month',
+    renderSimpleBarChart(local.rentalAvailabilityByMonth, { height: 220 }),
+    'Number of rental properties available during each month over the last year within 1 mile.',
+  )}
+          ${renderLocalMarketChartBlock(
+    'Rent changes since initial listing',
+    renderSimplePieChart(local.rentChangeProportion, {
+      ariaLabel: 'Proportion of currently available homes by rent change since initial listing',
+    }),
+    'Proportion of currently available homes by whether they have had a rent change since initial listing within 1 mile.',
+  )}
+        </div>
       </section>
 
-      <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Listings by asking price</h2>
-          </div>
-        </div>
-        <p class="property-tab-panel__intro">Active listings near ${escapeHtml(property.city)} grouped by asking price band.</p>
-        ${renderSimpleBarChart(seed.listingsByAskingPrice)}
-      </section>
-    </div>
-  `;
-}
+      <section class="overview-section overview-section--dataloft">
+        ${renderLocalMarketSectionHeader('Let over the last 12 months')}
 
-function renderPropertyMarketDemandTab(property) {
-  const seed = propertyDemoSeed(property);
-
-  return `
-    <div class="property-tab-panel property-tab-panel--overview">
-      <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Change in time to sell</h2>
-          </div>
+        <div class="local-market-charts">
+          ${renderLocalMarketChartBlock(
+    'New rentals by property type',
+    renderSimpleBarChart(newRentalsByTypePct, { height: 220, showValues: true, valueSuffix: '%' }),
+    'Proportion of new rentals started by type over the past 12 months within 1 mile.',
+  )}
+          ${renderLocalMarketChartBlock(
+    'Average achieved monthly rent by bedroom count',
+    renderGroupedBarChart(local.avgRentByBedrooms, {
+      height: 260,
+      legend: [
+        { label: 'Last 12 months', tone: 'primary' },
+        { label: 'Same period a year earlier', tone: 'secondary' },
+      ],
+      formatValue: (value) => formatCurrency(value),
+    }),
+    'Average achieved monthly rent for new rentals compared with the same period a year earlier, by bedroom count within 1 mile.',
+  )}
+          ${renderLocalMarketChartBlock(
+    'Achieved rent per square foot',
+    renderSimpleLineChart(local.rentPsfTrend, { height: 220 }),
+    'Change in per square foot achieved monthly rent over the last 12 months within 1 mile.',
+  )}
+          ${renderLocalMarketChartBlock(
+    'Depth of market by price band',
+    renderSimpleBarChart(priceBandPct, { height: 220, showValues: true, valueSuffix: '%' }),
+    'Proportion of new rentals started by price band over the past 12 months within 1 mile.',
+  )}
         </div>
-        <p class="property-tab-panel__intro">Average days on market for comparable sales in ${escapeHtml(property.city)}.</p>
-        ${renderSimpleLineChart(seed.timeToSellTrend, { height: 180 })}
-      </section>
-
-      <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Volume of sales by days on market</h2>
-          </div>
-        </div>
-        ${renderSimpleBarChart(seed.salesVolumeByDom, { height: 180 })}
       </section>
 
-      <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Transaction price evolution</h2>
-          </div>
-        </div>
-        ${renderSimpleLineChart(seed.transactionPriceTrend, { height: 180 })}
-      </section>
+      <section class="overview-section overview-section--dataloft">
+        ${renderLocalMarketSectionHeader('Performance')}
 
-      <section class="overview-section">
-        <div class="overview-section__header">
-          <div class="overview-section__title-wrap">
-            <h2 class="overview-section__title">Transaction price distribution</h2>
-          </div>
+        <div class="local-market-charts">
+          ${renderLocalMarketChartBlock(
+    'Average gross yield (rolling 12 months)',
+    renderSimpleLineChart(local.grossYieldRolling12m, { height: 220 }),
+    'Average gross yields on a rolling 12-month basis, calculated from average sales and rental prices on a price per square foot basis.',
+  )}
+          ${renderLocalMarketChartBlock(
+    'Average gross yield by property type',
+    renderSimpleBarChart(
+      local.grossYieldByType.map((item) => ({ label: item.label, value: item.value })),
+      { height: 220, showValues: true, valueSuffix: '%' },
+    ),
+    'Average gross yields over the last 12 months by property type, calculated from average sales and rental prices on a price per square foot basis.',
+  )}
         </div>
-        ${renderSimpleBarChart(seed.transactionPriceDistribution, { height: 180 })}
       </section>
     </div>
   `;
@@ -1648,15 +2120,16 @@ function renderPropertyTabContent(property, tabId, index) {
     case 'financials':
       return renderPropertyFinancialsTab(property, index);
     case 'risk':
-      return renderPropertyRiskTab(property);
+      return renderPropertyRiskTab(property, index);
     case 'esg':
       return renderPropertyEsgTab(property, index);
+    case 'local-market':
+      return renderPropertyLocalMarketTab(property);
     case 'market-trends':
-      return renderPropertyMarketTrendsTab(property);
     case 'market-demand':
-      return renderPropertyMarketDemandTab(property);
+      return renderPropertyLocalMarketTab(property);
     default:
-      return renderPropertyOverviewTab(property);
+      return renderPropertyOverviewTab(property, index);
   }
 }
 
@@ -1675,6 +2148,11 @@ function renderPropertyDetail(index, tabId) {
 
   if (tabId === 'overview' && !hasCompletedMortgageDetails(propertyForRoute)) {
     navigate(`/portfolio/property/${index}/financials`);
+    return;
+  }
+
+  if (tabId === 'market-trends' || tabId === 'market-demand') {
+    navigate(`/portfolio/property/${index}/local-market`);
     return;
   }
 
@@ -1706,7 +2184,7 @@ function renderPropertyDetail(index, tabId) {
       <div class="property-page">
         ${renderPropertyToolbar(index, tab.id)}
         <div class="property-tab-content ${isCardLayout ? 'property-tab-content--cards' : ''}">
-          ${isCardLayout ? '' : renderPropertyHero(property)}
+          ${renderPropertyHero(property)}
           ${renderPropertyTabContent(property, tab.id, index)}
         </div>
       </div>
@@ -1724,6 +2202,9 @@ function renderPropertyDetail(index, tabId) {
   if (tab.id === 'overview') {
     bindRemoveProperty(index);
     bindOverviewEdit(index);
+  }
+  if (tab.id === 'risk') {
+    bindInsuranceCallbackRequest();
   }
   bindPropertyTabs();
 }
@@ -1751,22 +2232,173 @@ function formatCurrencyChange(value) {
 function renderPortfolioMetric(label, value, options = {}) {
   const toneClass = options.tone ? ` portfolio-metric__value--${options.tone}` : '';
   const sub = options.sub ? `<div class="portfolio-metric__sub">${options.sub}</div>` : '';
+  const extra = options.extra ? `<div class="portfolio-metric__extra">${options.extra}</div>` : '';
   return `
     <div class="portfolio-metric${options.highlight ? ' portfolio-metric--highlight' : ''}">
       <div class="portfolio-metric__value${toneClass}">${value}</div>
       <div class="portfolio-metric__label">${escapeHtml(label)}</div>
       ${sub}
+      ${extra}
     </div>
   `;
 }
 
-function renderPortfolioComparisonRow(label, beforeValue, afterValue) {
+function hasInvestmentOpportunity(metrics, portfolio) {
+  if (!metrics.hasEquityData || metrics.totalEquity <= OPPORTUNITY_EQUITY_THRESHOLD) return false;
+  return getPortfolioMarketOpportunities(portfolio.properties).count > 0;
+}
+
+function renderInvestmentOpportunityBadge() {
+  return `<a class="portfolio-opportunity-badge" href="#/portfolio/marketplace">OPPORTUNITY</a>`;
+}
+
+function renderLineOpportunityBadge(count, index) {
+  if (!count) return '';
+  const label = count === 1 ? '1 Opportunity' : `${count} Opportunities`;
+  return `<a class="opportunity-badge" href="#/portfolio/property/${index}/financials">${escapeHtml(label)}</a>`;
+}
+
+function renderLineAlertBadge(property, index) {
+  const count = countPropertyAlerts(property, index);
+  if (!count) return '';
+  const label = count === 1 ? '1 Alert' : `${count} Alerts`;
+  const href = getPropertyAlertRoute(property, index);
+  return `<a class="alert-badge" href="${href}">${escapeHtml(label)}</a>`;
+}
+
+function renderLineAlerts(property, index) {
+  const opportunityBadge = renderLineOpportunityBadge(countPropertyOptimisationOpportunities(property), index);
+  const alertBadge = renderLineAlertBadge(property, index);
+  if (!opportunityBadge && !alertBadge) return '—';
+  return `<span class="line-badges">${opportunityBadge}${alertBadge}</span>`;
+}
+
+function renderRiskInsuranceAlertBanner() {
+  return `
+    <section class="alerts-section alerts-section--risk" aria-label="Insurance review required">
+      <div class="alerts-section__header">
+        <div class="section-title-row">
+          <h2 class="alerts-section__title">Insurance review required</h2>
+          ${renderInfoTooltip('Recent increases in environmental risk may affect your landlord insurance cover or premiums. An expert can review whether your current policy remains appropriate.')}
+        </div>
+      </div>
+      <div class="alerts-section__body">
+        <p class="alerts-section__message">
+          Environmental risks for this property have increased since your last assessment. We recommend reviewing your landlord insurance to ensure you remain adequately covered.
+        </p>
+        <button type="button" class="btn alerts-section__cta" data-action="request-insurance-callback">Request callback</button>
+        <p class="alerts-section__confirmation" id="insurance-callback-confirmation" hidden>
+          Thank you — an insurance expert will call you within 2 working days.
+        </p>
+      </div>
+    </section>
+  `;
+}
+
+function bindInsuranceCallbackRequest() {
+  const button = document.querySelector('[data-action="request-insurance-callback"]');
+  const confirmation = document.getElementById('insurance-callback-confirmation');
+  if (!button || !confirmation) return;
+
+  button.addEventListener('click', () => {
+    button.hidden = true;
+    confirmation.hidden = false;
+  });
+}
+
+function metricValuesChanged(before, after) {
+  if (before == null && after == null) return false;
+  if (before == null || after == null) return before !== after;
+  if (typeof before === 'number' && typeof after === 'number') {
+    return Math.abs(before - after) > 0.01;
+  }
+  return before !== after;
+}
+
+function renderPortfolioComparisonRow(label, beforeRaw, afterRaw, formatDisplay) {
+  const beforeDisplay = formatDisplay(beforeRaw);
+  const afterDisplay = formatDisplay(afterRaw);
+  const changed = metricValuesChanged(beforeRaw, afterRaw);
+
   return `
     <tr>
       <th scope="row">${escapeHtml(label)}</th>
-      <td>${beforeValue}</td>
-      <td>${afterValue}</td>
+      <td>${beforeDisplay}</td>
+      <td>${changed ? `<strong>${afterDisplay}</strong>` : afterDisplay}</td>
     </tr>
+  `;
+}
+
+function renderPortfolioImpactRows(beforeMetrics, afterMetrics) {
+  const equityBefore = beforeMetrics.hasEquityData ? beforeMetrics.totalEquity : null;
+  const equityAfter = afterMetrics.hasEquityData ? afterMetrics.totalEquity : null;
+  const ltvBefore = beforeMetrics.hasEquityData ? beforeMetrics.overallLtv : null;
+  const ltvAfter = afterMetrics.hasEquityData ? afterMetrics.overallLtv : null;
+
+  return [
+    renderPortfolioComparisonRow(
+      'Total portfolio value',
+      beforeMetrics.totalPortfolioValue,
+      afterMetrics.totalPortfolioValue,
+      (value) => formatCurrency(value),
+    ),
+    renderPortfolioComparisonRow(
+      'Total mortgage balance',
+      beforeMetrics.totalMortgageBalance,
+      afterMetrics.totalMortgageBalance,
+      (value) => formatCurrency(value),
+    ),
+    renderPortfolioComparisonRow(
+      'Total equity',
+      equityBefore,
+      equityAfter,
+      (value) => (value == null ? renderMissingIndicator() : formatCurrency(value)),
+    ),
+    renderPortfolioComparisonRow(
+      'Portfolio LTV',
+      ltvBefore,
+      ltvAfter,
+      (value) => (value == null ? renderMissingIndicator() : formatPercent(value)),
+    ),
+    renderPortfolioComparisonRow(
+      'Total market rent',
+      beforeMetrics.totalMarketRent,
+      afterMetrics.totalMarketRent,
+      (value) => formatCurrency(value),
+    ),
+    renderPortfolioComparisonRow(
+      'Total achieved rent',
+      beforeMetrics.totalRentAgreed,
+      afterMetrics.totalRentAgreed,
+      (value) => renderRentAgreedDisplay(value, true),
+    ),
+    renderPortfolioComparisonRow(
+      'Gross yield',
+      beforeMetrics.grossYield,
+      afterMetrics.grossYield,
+      (value) => formatPercent(value),
+    ),
+    renderPortfolioComparisonRow(
+      'Interest coverage ratio',
+      beforeMetrics.icr,
+      afterMetrics.icr,
+      (value) => formatPercent(value),
+    ),
+    renderPortfolioComparisonRow(
+      'Properties held',
+      beforeMetrics.totalProperties,
+      afterMetrics.totalProperties,
+      (value) => String(value),
+    ),
+  ].join('');
+}
+
+function renderQuoteNextStepsButton() {
+  return `
+    <div class="quote-summary__actions">
+      <button type="button" class="btn btn-primary" data-action="quote-next-steps">Next steps</button>
+      <p class="quote-summary__confirmation" data-quote-confirmation hidden>Thank you — a specialist will be in touch within 2 working days.</p>
+    </div>
   `;
 }
 
@@ -1836,6 +2468,7 @@ function renderMortgageQuote(listingId) {
               </div>
             </dl>
             <p class="quote-summary__note">Illustrative buy-to-let quote based on a ${quote.depositPct}% deposit and interest-only servicing at ${formatInterestRate(quote.interestRate)}. Subject to affordability, valuation and lending criteria.</p>
+            ${renderQuoteNextStepsButton()}
           </section>
 
           <section class="card quote-comparison">
@@ -1851,15 +2484,7 @@ function renderMortgageQuote(listingId) {
                   </tr>
                 </thead>
                 <tbody>
-                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
-                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
-                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
-                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
-                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
-                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
-                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                  ${renderPortfolioImpactRows(beforeMetrics, afterMetrics)}
                 </tbody>
               </table>
             </div>
@@ -1958,27 +2583,58 @@ function renderFinancialRentReviewOpportunity(property, index) {
   `;
 }
 
-function renderEsgImprovementOpportunity(property, index) {
+function renderEsgImprovementRequirement(property, index) {
   if (!hasEpcImprovementOpportunity(property, { propertyIndex: index })) return '';
 
   const quote = buildEpcImprovementQuote(property, { propertyIndex: index });
 
   return `
-    <section class="opportunities-section financial-opportunity-panel" aria-label="EPC improvement opportunity">
+    <section class="alerts-section financial-alert-panel" aria-label="EPC improvement requirement">
+      <div class="alerts-section__header">
+        <div class="section-title-row">
+          <h2 class="alerts-section__title">EPC Improvement Requirement</h2>
+          ${renderInfoTooltip('Properties rated EPC D or below may not be lettable until improved to at least EPC C. Green home improvement finance may help fund energy efficiency works.')}
+        </div>
+      </div>
+      <div class="alerts-section__body">
+        <p class="alerts-section__message">
+          Current rating is <strong>EPC ${quote.currentRating}</strong> — properties must reach at least EPC C to comply with lettings regulations.
+        </p>
+        <p class="alerts-section__detail">
+          Estimated cost of ${formatCurrency(quote.improvementCost)} to reach EPC ${quote.targetRating}. Review indicative green finance options for energy efficiency improvements.
+        </p>
+        <a class="btn alerts-section__cta" href="#/portfolio/property/${index}/epc-improvement">View</a>
+      </div>
+    </section>
+  `;
+}
+
+function renderMarketplaceInvestmentBanner(metrics, portfolio) {
+  if (!metrics.hasEquityData || metrics.totalEquity <= OPPORTUNITY_EQUITY_THRESHOLD) return '';
+
+  const opportunities = getPortfolioMarketOpportunities(portfolio.properties);
+  if (opportunities.count === 0) return '';
+
+  const areaLabel = opportunities.cities.length === 1
+    ? opportunities.cities[0]
+    : 'your portfolio areas';
+  const maxPriceLabel = formatCurrency(MARKETPLACE_MAX_ASKING_PRICE);
+
+  return `
+    <section class="opportunities-section opportunities-section--marketplace" aria-label="Investment opportunity">
       <div class="opportunities-section__header">
         <div class="section-title-row">
-          <h2 class="opportunities-section__title">EPC Improvement Opportunity</h2>
-          ${renderInfoTooltip('Properties rated EPC D or below may not be lettable until improved to at least EPC C. Green home improvement finance may help fund energy efficiency works.')}
+          <h2 class="opportunities-section__title">Investment Opportunity</h2>
+          ${renderInfoTooltip('Investment opportunities identified in markets where you already hold assets. Available equity may be used as a deposit to support leveraged buy-to-let acquisitions.')}
         </div>
       </div>
       <div class="opportunities-section__body">
         <p class="opportunities-section__message">
-          Current rating is <strong>EPC ${quote.currentRating}</strong> — properties must reach at least EPC C to comply with lettings regulations.
+          <strong>${opportunities.count}</strong> ${opportunities.count === 1 ? 'property is' : 'properties are'} available for sale in ${escapeHtml(areaLabel)} with estimated gross yields above 5%.
         </p>
         <p class="opportunities-section__detail">
-          Estimated cost of ${formatCurrency(quote.improvementCost)} to reach EPC ${quote.targetRating}. Review indicative green finance options for energy efficiency improvements.
+          Based on your available equity, you may wish to review buy-to-let listings priced at ${maxPriceLabel} or below.
         </p>
-        <a class="btn opportunities-section__cta" href="#/portfolio/property/${index}/epc-improvement">View</a>
       </div>
     </section>
   `;
@@ -2108,29 +2764,29 @@ function renderRentReviewOpportunitySection(portfolio) {
   `;
 }
 
-function renderEpcImprovementOpportunitySection(portfolio) {
-  const epcOpportunities = getPortfolioEpcImprovementOpportunities(portfolio.properties);
-  if (epcOpportunities.length === 0) return '';
+function renderEpcImprovementRequirementSection(portfolio) {
+  const epcRequirements = getPortfolioEpcImprovementOpportunities(portfolio.properties);
+  if (epcRequirements.length === 0) return '';
 
-  const first = epcOpportunities[0];
+  const first = epcRequirements[0];
   const firstAddress = formatAddress(first.property);
 
   return `
-    <section class="opportunities-section" aria-label="EPC improvement opportunities">
-      <div class="opportunities-section__header">
+    <section class="alerts-section" aria-label="EPC improvement requirements">
+      <div class="alerts-section__header">
         <div class="section-title-row">
-          <h2 class="opportunities-section__title">EPC Improvement Opportunity</h2>
+          <h2 class="alerts-section__title">EPC Improvement Requirement</h2>
           ${renderInfoTooltip('Properties rated EPC D, E, F or G may not be lettable until improved to EPC A, B or C. Green home improvement finance may help fund energy efficiency works.')}
         </div>
       </div>
-      <div class="opportunities-section__body">
-        <p class="opportunities-section__message">
-          <strong>${escapeHtml(firstAddress)}</strong> is rated EPC ${first.quote.currentRating} and may need improvement to EPC ${first.quote.targetRating} or above.
+      <div class="alerts-section__body">
+        <p class="alerts-section__message">
+          <strong>${escapeHtml(firstAddress)}</strong> is rated EPC ${first.quote.currentRating} and must be improved to EPC ${first.quote.targetRating} or above.
         </p>
-        <p class="opportunities-section__detail">
+        <p class="alerts-section__detail">
           Estimated works cost ${formatCurrency(first.quote.improvementCost)} — review green finance options on the ESG &amp; Renovation tab.
         </p>
-        <a class="btn opportunities-section__cta" href="#/portfolio/property/${first.index}/esg">View</a>
+        <a class="btn alerts-section__cta" href="#/portfolio/property/${first.index}/esg">View</a>
       </div>
     </section>
   `;
@@ -2141,7 +2797,7 @@ function renderPortfolioOpportunitySections(metrics, portfolio) {
     renderRefinanceOpportunitySection(portfolio),
     renderMortgageRenewalOpportunitySection(portfolio),
     renderRentReviewOpportunitySection(portfolio),
-    renderEpcImprovementOpportunitySection(portfolio),
+    renderEpcImprovementRequirementSection(portfolio),
     renderMarketplaceOpportunitySection(metrics, portfolio),
   ].filter(Boolean).join('');
 }
@@ -2216,6 +2872,7 @@ function renderPropertyRefinanceQuote(index) {
               </div>
             </dl>
             <p class="quote-summary__note">Illustrative refinance quote based on interest-only servicing at ${formatInterestRate(quote.bestRate)} on your existing balance. Subject to affordability, valuation, early repayment charges and lending criteria.</p>
+            ${renderQuoteNextStepsButton()}
           </section>
 
           <section class="card quote-comparison">
@@ -2231,15 +2888,7 @@ function renderPropertyRefinanceQuote(index) {
                   </tr>
                 </thead>
                 <tbody>
-                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
-                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
-                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
-                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
-                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
-                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
-                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                  ${renderPortfolioImpactRows(beforeMetrics, afterMetrics)}
                 </tbody>
               </table>
             </div>
@@ -2333,6 +2982,7 @@ function renderPropertyMortgageRenewalQuote(index) {
               </div>
             </dl>
             <p class="quote-summary__note">Illustrative renewal remortgage quote for existing landlord customers, based on interest-only servicing at ${exclusiveRateLabel} on your existing balance. Subject to affordability, valuation, product availability and lending criteria.</p>
+            ${renderQuoteNextStepsButton()}
           </section>
 
           <section class="card quote-comparison">
@@ -2348,15 +2998,7 @@ function renderPropertyMortgageRenewalQuote(index) {
                   </tr>
                 </thead>
                 <tbody>
-                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
-                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
-                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
-                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
-                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
-                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
-                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                  ${renderPortfolioImpactRows(beforeMetrics, afterMetrics)}
                 </tbody>
               </table>
             </div>
@@ -2452,15 +3094,7 @@ function renderPropertyRentReview(index) {
                   </tr>
                 </thead>
                 <tbody>
-                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
-                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
-                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
-                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
-                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
-                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
-                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                  ${renderPortfolioImpactRows(beforeMetrics, afterMetrics)}
                 </tbody>
               </table>
             </div>
@@ -2569,6 +3203,7 @@ function renderPropertyEpcImprovement(index) {
               </div>
             </dl>
             <p class="quote-summary__note">Illustrative green home improvement finance to fund energy efficiency works and bring the property to EPC ${quote.targetRating}. Subject to affordability, valuation, works specification and lending criteria. Properties rated EPC D or below may not be lettable until improved to at least EPC C.</p>
+            ${renderQuoteNextStepsButton()}
           </section>
 
           <section class="card quote-comparison">
@@ -2584,15 +3219,7 @@ function renderPropertyEpcImprovement(index) {
                   </tr>
                 </thead>
                 <tbody>
-                  ${renderPortfolioComparisonRow('Total portfolio value', formatCurrency(beforeMetrics.totalPortfolioValue), formatCurrency(afterMetrics.totalPortfolioValue))}
-                  ${renderPortfolioComparisonRow('Total mortgage balance', formatCurrency(beforeMetrics.totalMortgageBalance), formatCurrency(afterMetrics.totalMortgageBalance))}
-                  ${renderPortfolioComparisonRow('Total equity', beforeMetrics.hasEquityData ? formatCurrency(beforeMetrics.totalEquity) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatCurrency(afterMetrics.totalEquity) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Portfolio LTV', beforeMetrics.hasEquityData ? formatPercent(beforeMetrics.overallLtv) : renderMissingIndicator(), afterMetrics.hasEquityData ? formatPercent(afterMetrics.overallLtv) : renderMissingIndicator())}
-                  ${renderPortfolioComparisonRow('Total market rent', formatCurrency(beforeMetrics.totalMarketRent), formatCurrency(afterMetrics.totalMarketRent))}
-                  ${renderPortfolioComparisonRow('Total achieved rent', renderRentAgreedDisplay(beforeMetrics.totalRentAgreed, true), renderRentAgreedDisplay(afterMetrics.totalRentAgreed, true))}
-                  ${renderPortfolioComparisonRow('Gross yield', formatPercent(beforeMetrics.grossYield), formatPercent(afterMetrics.grossYield))}
-                  ${renderPortfolioComparisonRow('Interest coverage ratio', formatPercent(beforeMetrics.icr), formatPercent(afterMetrics.icr))}
-                  ${renderPortfolioComparisonRow('Properties held', String(beforeMetrics.totalProperties), String(afterMetrics.totalProperties))}
+                  ${renderPortfolioImpactRows(beforeMetrics, afterMetrics)}
                 </tbody>
               </table>
             </div>
@@ -2755,6 +3382,7 @@ function renderMarketplace() {
             </div>
           </div>
         ` : `
+          ${renderMarketplaceInvestmentBanner(metrics, portfolio)}
           ${renderMarketplaceFilters()}
           ${filteredListings.length === 0 ? `
             <div class="card marketplace-empty-filter">
@@ -2779,7 +3407,7 @@ function renderMarketplace() {
   bindMarketplaceFilters();
 }
 
-function renderPortfolioEquityMetric(metrics) {
+function renderPortfolioEquityMetric(metrics, portfolio) {
   if (!metrics.hasEquityData) {
     return renderPortfolioMetric('Total equity', '—', {
       sub: 'Add mortgage details to a property to calculate equity',
@@ -2789,8 +3417,14 @@ function renderPortfolioEquityMetric(metrics) {
   const equitySub = metrics.equityPropertyCount < metrics.totalProperties
     ? `Based on ${metrics.equityPropertyCount} of ${metrics.totalProperties} properties with mortgage details recorded`
     : null;
+  const investmentBadge = portfolio && hasInvestmentOpportunity(metrics, portfolio)
+    ? renderInvestmentOpportunityBadge()
+    : '';
 
-  return renderPortfolioMetric('Total equity', formatCurrency(metrics.totalEquity), { sub: equitySub });
+  return renderPortfolioMetric('Total equity', formatCurrency(metrics.totalEquity), {
+    sub: equitySub,
+    extra: investmentBadge,
+  });
 }
 
 function renderPortfolioLtvMetric(metrics) {
@@ -2801,12 +3435,234 @@ function renderPortfolioLtvMetric(metrics) {
   return renderPortfolioMetric('Portfolio LTV', formatPercent(metrics.overallLtv));
 }
 
-function renderPortfolioReport(metrics) {
+function parseMoneyValue(value) {
+  return Number(String(value ?? '').replace(/[^0-9.]/g, '')) || 0;
+}
+
+function chartTipAttr(label, value) {
+  return `data-chart-tip="${escapeHtml(`${label}: ${value}`)}"`;
+}
+
+function bindPortfolioChartTooltips(root = document) {
+  let tip = document.getElementById('chart-tooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'chart-tooltip';
+    tip.className = 'chart-tooltip';
+    tip.hidden = true;
+    document.body.appendChild(tip);
+  }
+
+  const showTip = (event) => {
+    const target = event.currentTarget;
+    const text = target.getAttribute('data-chart-tip');
+    if (!text) return;
+    tip.textContent = text;
+    tip.hidden = false;
+    const rect = target.getBoundingClientRect();
+    const x = event.clientX ?? rect.left + rect.width / 2;
+    const y = event.clientY ?? rect.top;
+    tip.style.left = `${x + 14}px`;
+    tip.style.top = `${y + 14}px`;
+  };
+
+  const moveTip = (event) => {
+    if (tip.hidden) return;
+    tip.style.left = `${event.clientX + 14}px`;
+    tip.style.top = `${event.clientY + 14}px`;
+  };
+
+  const hideTip = () => {
+    tip.hidden = true;
+  };
+
+  root.querySelectorAll('[data-chart-tip]').forEach((element) => {
+    element.addEventListener('mouseenter', showTip);
+    element.addEventListener('mousemove', moveTip);
+    element.addEventListener('mouseleave', hideTip);
+    element.addEventListener('focus', showTip);
+    element.addEventListener('blur', hideTip);
+  });
+}
+
+function polarToCartesian(cx, cy, radius, angleDeg) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(rad),
+    y: cy + radius * Math.sin(rad),
+  };
+}
+
+function renderPortfolioDonutChart(slices) {
+  const size = 320;
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = 66;
+  const strokeWidth = 30;
+  const activeSlices = slices.filter((slice) => slice.value > 0);
+  const total = activeSlices.reduce((sum, slice) => sum + slice.value, 0);
+
+  if (!total) {
+    return '<p class="portfolio-chart-empty">No data available</p>';
+  }
+
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  const rings = [];
+  const flyouts = [];
+
+  activeSlices.forEach((slice) => {
+    const portion = slice.value / total;
+    const dash = portion * circumference;
+    const gap = Math.max(circumference - dash, 0.001);
+    const midAngle = ((offset + dash / 2) / circumference) * 360;
+    const formattedValue = slice.format ? slice.format(slice.value) : slice.value;
+    const flyoutLabel = slice.flyoutLabel || slice.name;
+    const tip = chartTipAttr(flyoutLabel, formattedValue);
+
+    rings.push(`
+      <circle
+        cx="${cx}"
+        cy="${cy}"
+        r="${radius}"
+        fill="none"
+        stroke="${slice.color}"
+        stroke-width="${strokeWidth}"
+        stroke-dasharray="${dash} ${gap}"
+        stroke-dashoffset="${-offset}"
+        transform="rotate(-90 ${cx} ${cy})"
+        class="portfolio-donut__segment"
+        ${tip}
+        tabindex="0"
+        role="img"
+        aria-label="${escapeHtml(`${flyoutLabel}: ${formattedValue}`)}"
+      />
+    `);
+
+    const outerR = radius + strokeWidth / 2;
+    const edge = polarToCartesian(cx, cy, outerR, midAngle);
+    const stubEnd = polarToCartesian(cx, cy, outerR + 12, midAngle);
+    const isRight = stubEnd.x >= cx;
+    const labelX = stubEnd.x + (isRight ? 28 : -28);
+
+    flyouts.push(`
+      <line x1="${edge.x}" y1="${edge.y}" x2="${stubEnd.x}" y2="${stubEnd.y}" class="portfolio-donut__flyout-line"/>
+      <line x1="${stubEnd.x}" y1="${stubEnd.y}" x2="${labelX}" y2="${stubEnd.y}" class="portfolio-donut__flyout-line"/>
+      <text
+        x="${labelX + (isRight ? 6 : -6)}"
+        y="${stubEnd.y}"
+        text-anchor="${isRight ? 'start' : 'end'}"
+        dominant-baseline="middle"
+        class="portfolio-donut__flyout-label"
+      >${escapeHtml(flyoutLabel)}</text>
+    `);
+
+    offset += dash;
+  });
+
+  return `
+    <div class="portfolio-donut">
+      <svg viewBox="0 0 ${size} ${size}" class="portfolio-donut__svg" aria-hidden="true">
+        ${rings.join('')}
+        ${flyouts.join('')}
+      </svg>
+    </div>
+  `;
+}
+
+function renderPortfolioStackedBar({ title, segments, ariaLabel }) {
+  const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+
+  if (!total) {
+    return '<p class="portfolio-chart-empty">No data available</p>';
+  }
+
+  return `
+    <div class="portfolio-stacked-bar">
+      ${title ? `<h4 class="portfolio-chart__title">${escapeHtml(title)}</h4>` : ''}
+      <div class="portfolio-stacked-bar__track" role="group" aria-label="${escapeHtml(ariaLabel || title || 'Stacked bar chart')}">
+        ${segments.filter((segment) => segment.value > 0).map((segment) => {
+    const formattedValue = segment.format ? segment.format(segment.value) : segment.value;
+    return `
+          <div
+            class="portfolio-stacked-bar__segment"
+            style="width:${((segment.value / total) * 100).toFixed(2)}%;background:${segment.color}"
+            ${chartTipAttr(segment.name, formattedValue)}
+            tabindex="0"
+            role="img"
+            aria-label="${escapeHtml(`${segment.name}: ${formattedValue}`)}"
+          ></div>
+        `;
+  }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderPortfolioLineChart(points, options = {}) {
+  const width = options.width || 440;
+  const height = 190;
+  const padX = 28;
+  const padY = 30;
+  const values = points.map((point) => point.value);
+  const min = Math.min(...values) * 0.97;
+  const max = Math.max(...values) * 1.03;
+  const range = max - min || 1;
+
+  const coords = points.map((point, index) => {
+    const x = padX + (index / Math.max(points.length - 1, 1)) * (width - padX * 2);
+    const y = height - padY - ((point.value - min) / range) * (height - padY * 2);
+    return { x, y, ...point };
+  });
+
+  const linePath = coords.map((coord, index) => `${index === 0 ? 'M' : 'L'} ${coord.x} ${coord.y}`).join(' ');
+  const areaPath = `${linePath} L ${coords[coords.length - 1].x} ${height - padY} L ${coords[0].x} ${height - padY} Z`;
+  const title = options.title || '';
+
+  return `
+    <div class="portfolio-line-chart">
+      ${title ? `<h4 class="portfolio-chart__title">${escapeHtml(title)}</h4>` : ''}
+      <svg viewBox="0 0 ${width} ${height}" class="portfolio-line-chart__svg" preserveAspectRatio="xMidYMid meet">
+        <path d="${areaPath}" class="portfolio-line-chart__area"/>
+        <path d="${linePath}" class="portfolio-line-chart__line"/>
+        ${coords.map((coord) => `
+          <circle
+            cx="${coord.x}"
+            cy="${coord.y}"
+            r="5"
+            class="portfolio-line-chart__dot"
+            ${chartTipAttr(coord.label, formatCurrency(coord.value))}
+            tabindex="0"
+            role="img"
+            aria-label="${escapeHtml(`${coord.label}: ${formatCurrency(coord.value)}`)}"
+          />
+        `).join('')}
+        ${coords.map((coord) => `
+          <text x="${coord.x}" y="${height - 8}" text-anchor="middle" class="portfolio-line-chart__axis-label">${escapeHtml(coord.label)}</text>
+        `).join('')}
+      </svg>
+    </div>
+  `;
+}
+
+function renderPortfolioReport(metrics, portfolio) {
   const change = metrics.portfolioValueChange3m || {};
   const changeTone = change.pct == null ? null : change.pct >= 0 ? 'up' : 'down';
   const changeSub = change.pct != null
     ? `${change.pct >= 0 ? '+' : ''}${change.pct}% over 3 months`
     : null;
+
+  const mortgageBalance = metrics.properties.reduce(
+    (sum, property) => sum + parseMoneyValue(property.mortgageBalance),
+    0,
+  );
+  const equityValue = Math.max(metrics.totalPortfolioValue - mortgageBalance, 0);
+  const achievedRent = metrics.totalRentAgreed ?? metrics.properties.reduce(
+    (sum, property) => sum + (getAchievedRentTotal(property) || 0),
+    0,
+  );
+  const rentGap = Math.max(metrics.totalMarketRent - achievedRent, 0);
+  const vacantCount = Math.max(metrics.totalProperties - metrics.occupiedCount, 0);
 
   return `
     <section class="portfolio-report" aria-label="Portfolio summary">
@@ -2815,6 +3671,10 @@ function renderPortfolioReport(metrics) {
           <h2 class="portfolio-report__title">Portfolio overview</h2>
           ${renderInfoTooltip('High-level portfolio summary continuously updated with the latest property data to provide an accurate view of how your investments are performing. Value data is monitored 24/7, so you\'re always the first to know about changes.')}
         </div>
+        <div class="portfolio-report__goals-callout">
+          <p class="portfolio-report__goals-text">Tell us about your plans so we can tailor optimisation suggestions</p>
+          <button type="button" class="portfolio-report__goals-btn" data-action="open-investment-goals">My investment goals</button>
+        </div>
       </div>
       <div class="portfolio-report__columns">
         <div class="portfolio-report__column">
@@ -2822,8 +3682,26 @@ function renderPortfolioReport(metrics) {
           <div class="portfolio-report__grid">
             ${renderPortfolioMetric('Total portfolio value', formatCurrency(metrics.totalPortfolioValue), { highlight: true })}
             ${renderPortfolioMetric('Total mortgage balance', formatCurrency(metrics.totalMortgageBalance))}
-            ${renderPortfolioEquityMetric(metrics)}
+            ${renderPortfolioEquityMetric(metrics, portfolio)}
             ${renderPortfolioLtvMetric(metrics)}
+          </div>
+          <div class="portfolio-report__chart">
+            ${renderPortfolioDonutChart([
+    {
+      name: 'Equity',
+      flyoutLabel: 'Equity',
+      value: equityValue,
+      color: '#ffffff',
+      format: formatCurrency,
+    },
+    {
+      name: 'Mortgages',
+      flyoutLabel: 'Mortgages',
+      value: mortgageBalance,
+      color: 'rgba(255,255,255,0.45)',
+      format: formatCurrency,
+    },
+  ])}
           </div>
         </div>
         <div class="portfolio-report__column">
@@ -2835,6 +3713,46 @@ function renderPortfolioReport(metrics) {
     sub: metrics.totalProperties > 0 ? `${metrics.occupiedCount} of ${metrics.totalProperties} let` : null,
   })}
           </div>
+          <div class="portfolio-report__chart">
+            <div class="portfolio-report__stacked-group">
+              ${renderPortfolioStackedBar({
+    title: 'Rent achieved vs Market',
+    ariaLabel: `Achieved rent ${formatCurrency(achievedRent)} of ${formatCurrency(metrics.totalMarketRent)} market rent`,
+    segments: [
+      {
+        name: 'Achieved rent',
+        value: achievedRent,
+        color: 'rgba(255,255,255,0.92)',
+        format: (value) => `${formatCurrency(value)}/mo`,
+      },
+      {
+        name: 'Gap to market',
+        value: rentGap,
+        color: 'rgba(255,255,255,0.35)',
+        format: (value) => `${formatCurrency(value)}/mo`,
+      },
+    ],
+  })}
+              ${renderPortfolioStackedBar({
+    title: 'Occupancy',
+    ariaLabel: `${metrics.occupiedCount} occupied and ${vacantCount} vacant properties`,
+    segments: [
+      {
+        name: 'Occupied',
+        value: metrics.occupiedCount,
+        color: 'rgba(255,255,255,0.92)',
+        format: (value) => `${value} properties`,
+      },
+      {
+        name: 'Vacant',
+        value: vacantCount,
+        color: 'rgba(255,255,255,0.35)',
+        format: (value) => `${value} properties`,
+      },
+    ],
+  })}
+            </div>
+          </div>
         </div>
         <div class="portfolio-report__column">
           <h3 class="portfolio-report__column-title">Performance</h3>
@@ -2845,6 +3763,9 @@ function renderPortfolioReport(metrics) {
     tone: changeTone,
     sub: changeSub,
   })}
+          </div>
+          <div class="portfolio-report__chart">
+            ${renderPortfolioLineChart(metrics.portfolioValueTrend5y || [], { title: 'Portfolio Value' })}
           </div>
         </div>
       </div>
@@ -2859,7 +3780,7 @@ function renderAccessGate() {
         <img
           class="access-gate__logo"
           src="${BRAND_LOGO_PATH}"
-          alt="Your Brand"
+          alt="ACME Lettings"
           height="40"
         >
         <h1 class="access-gate__title">Investor Landlord Portal</h1>
@@ -2966,7 +3887,7 @@ function renderLogin() {
     <div class="demo-banner demo-banner--login">Demonstration prototype only. No credentials are collected.</div>
     <div class="login-page">
       <div class="login-hero">
-        ${renderPortalLogo({ height: 40, className: 'portal-logo portal-logo--hero' })}
+        ${renderPortalLogo({ height: 48, className: 'portal-logo portal-logo--hero' })}
         <h1>Investor Landlord Portal</h1>
         <p>Demonstration of a buy-to-let portfolio experience. All property and portfolio data is fictional.</p>
       </div>
@@ -3016,7 +3937,8 @@ function renderDashboard() {
           <div class="alert alert-success">
             Portfolio <strong>${escapeHtml(state.portfolio.name)}</strong> — ${state.portfolio.properties.length} propert${state.portfolio.properties.length === 1 ? 'y' : 'ies'}.
           </div>
-          ${renderPortfolioReport(computePortfolioMetrics(state.portfolio.properties))}
+          ${renderPortfolioReport(computePortfolioMetrics(state.portfolio.properties), state.portfolio)}
+          ${renderInvestmentGoalsModal()}
           <div class="btn-group">
             <a class="btn btn-primary" href="#/portfolio/summary">View portfolio</a>
             <button class="btn btn-secondary" data-action="create-new">Create another portfolio</button>
@@ -3024,7 +3946,7 @@ function renderDashboard() {
         ` : `
           <div class="card">
             <h2 class="section-title">Get started</h2>
-            <p style="color: var(--portal-text-muted); margin: 0 0 8px;">You don't have a portfolio yet. Create one by adding properties individually or uploading a CSV file.</p>
+            <p class="empty-state-text">You don't have a portfolio yet. Create one by adding properties individually or uploading a CSV file.</p>
             <div class="btn-group">
               <a class="btn btn-primary" href="#/portfolio/create">Create new portfolio</a>
             </div>
@@ -3036,6 +3958,8 @@ function renderDashboard() {
   `;
 
   bindCommonActions();
+  bindPortfolioChartTooltips();
+  bindInvestmentGoalsModal();
   document.querySelector('[data-action="create-new"]')?.addEventListener('click', () => {
     draftPortfolio = { name: '', properties: [] };
     state.draftPortfolio = draftPortfolio;
@@ -3385,8 +4309,30 @@ function finalizeBulkImport(validProperties) {
   draftPortfolio = { name: '', properties: [] };
   state.draftPortfolio = draftPortfolio;
   pendingBulkImport = null;
+  pendingBulkImportSuccess = null;
   saveState(state);
   navigate('/portfolio/summary');
+}
+
+async function triggerDemoBulkImport() {
+  const response = await fetch('assets/portfolio-sample-perfect.csv');
+  const text = await response.text();
+  const result = parseCsvDetailed(text);
+  const total = result.validCount || result.rows.length || 3;
+
+  pendingBulkImportSuccess = {
+    imported: total,
+    total,
+    properties: result.validProperties,
+  };
+  renderUploadCsv();
+}
+
+function bindBulkImportSuccessModal() {
+  document.querySelector('[data-action="confirm-bulk-import"]')?.addEventListener('click', () => {
+    if (!pendingBulkImportSuccess?.properties?.length) return;
+    finalizeBulkImport(pendingBulkImportSuccess.properties);
+  });
 }
 
 function renderAddProperty() {
@@ -3434,6 +4380,24 @@ function renderAddProperty() {
   document.getElementById('finish-btn')?.addEventListener('click', finishPortfolio);
 }
 
+function renderBulkImportSuccessModal() {
+  if (!pendingBulkImportSuccess) return '';
+
+  const { imported, total } = pendingBulkImportSuccess;
+  return `
+    <div class="modal" id="bulk-import-success-modal" role="dialog" aria-labelledby="bulk-import-success-title" aria-modal="true">
+      <div class="modal__backdrop"></div>
+      <div class="modal__panel">
+        <h2 class="modal__title" id="bulk-import-success-title">Import complete</h2>
+        <p class="modal__intro">${imported} of ${total} properties successfully imported.</p>
+        <div class="modal__actions">
+          <button type="button" class="btn btn-primary" data-action="confirm-bulk-import">Continue</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderUploadCsv() {
   app.innerHTML = `
     ${renderHeader()}
@@ -3445,13 +4409,6 @@ function renderUploadCsv() {
 
         <div class="card">
           <p style="margin-top: 0;">Download the CSV template, fill in your property details, then upload the file. Required columns: Title/Ref, Postcode, Property number, Street, City.</p>
-          <div class="scenario-panel">
-            <p class="scenario-panel__label">Demo scenarios</p>
-            <div class="btn-group" style="margin-top: 0;">
-              <button type="button" class="btn btn-secondary" data-csv="perfect">Perfect import</button>
-              <button type="button" class="btn btn-secondary" data-csv="errors">Import with errors</button>
-            </div>
-          </div>
           <div class="btn-group" style="margin-top: 0;">
             <a class="btn btn-secondary" href="assets/portfolio-template.csv" download="portfolio-template.csv">Download template</a>
           </div>
@@ -3462,9 +4419,8 @@ function renderUploadCsv() {
             <div class="upload-zone__icon">📄</div>
             <p>Drag and drop your CSV file here, or click to browse</p>
             <label class="btn btn-primary" for="csv-input">Choose file</label>
-            <input type="file" id="csv-input" accept=".csv,text/csv">
+            <input type="file" id="csv-input" accept=".csv,text/csv" hidden>
           </div>
-          <div id="upload-result">${pendingBulkImport ? renderBulkValidationPanel(pendingBulkImport) : ''}</div>
         </div>
 
         <div class="btn-group">
@@ -3473,14 +4429,12 @@ function renderUploadCsv() {
       </div>
     </main>
     ${renderFooter()}
+    ${renderBulkImportSuccessModal()}
   `;
 
   bindCommonActions();
   setupCsvUpload();
-  bindBulkValidationPanel();
-  document.querySelectorAll('[data-csv]').forEach((btn) => {
-    btn.addEventListener('click', () => loadSampleCsv(btn.dataset.csv));
-  });
+  bindBulkImportSuccessModal();
 }
 
 function syncPortfolioAvm(portfolio) {
@@ -3505,11 +4459,9 @@ function renderSummary() {
         <div class="breadcrumb"><a href="#/dashboard">Dashboard</a> / Portfolio summary</div>
         <h1 class="page-title">${escapeHtml(portfolio.name)}</h1>
 
-        ${renderPortfolioReport(metrics)}
+        ${renderPortfolioReport(metrics, portfolio)}
 
         ${renderPortfolioFinancialCompletionBanner(portfolio.properties)}
-
-        ${renderPortfolioOpportunitySections(metrics, portfolio)}
 
         <div class="card">
           <div class="portfolio-properties-header">
@@ -3528,12 +4480,17 @@ function renderSummary() {
                 <tr>
                   <th>Reference</th>
                   <th>Address</th>
-                  <th>Estimated value</th>
-                  <th>Market rent</th>
                   <th>Achieved rent</th>
+                  <th>Market rent</th>
                   <th>Occupancy</th>
-                  <th>Mortgage payment</th>
-                  <th>Mortgage rate</th>
+                  <th>Letting agent</th>
+                  <th>
+                    <span class="data-table__header-label">
+                      Profile %
+                      ${renderInfoTooltip('The more information we have about a property, the more ways we can help you optimise your portfolio.')}
+                    </span>
+                  </th>
+                  <th>Opportunities &amp; alerts</th>
                 </tr>
               </thead>
               <tbody>
@@ -3548,12 +4505,12 @@ function renderSummary() {
                   >
                     <td><strong>${escapeHtml(p.titleRef)}</strong></td>
                     <td>${escapeHtml(formatAddress(p))}</td>
-                    <td>${renderLineCurrencyPlain(p.avmValue)}</td>
-                    <td>${renderLineCurrency(p.marketRent)}</td>
                     <td>${renderRentAgreedDisplay(p.rentAgreed)}</td>
+                    <td>${renderLineCurrency(p.marketRent)}</td>
                     <td>${renderLineOccupancy(p.occupancy)}</td>
-                    <td>${renderLineCurrency(p.monthlyPayments)}</td>
-                    <td>${renderLineInterestRate(p.interestRate)}</td>
+                    <td>${escapeHtml(getPropertyLettingAgent(index))}</td>
+                    <td>${renderLineCompleteness(computePropertyDataCompleteness(p))}</td>
+                    <td>${renderLineAlerts(p, index)}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -3568,10 +4525,13 @@ function renderSummary() {
         </div>
       </div>
     </main>
+    ${renderInvestmentGoalsModal()}
     ${renderFooter()}
   `;
 
   bindCommonActions();
+  bindPortfolioChartTooltips();
+  bindInvestmentGoalsModal();
   document.querySelector('[data-action="create-new"]')?.addEventListener('click', () => {
     draftPortfolio = { name: '', properties: [] };
     state.draftPortfolio = draftPortfolio;
@@ -3585,7 +4545,10 @@ function renderSummary() {
       const tab = property ? getPropertyDefaultTab(property) : 'overview';
       navigate(`/portfolio/property/${row.dataset.index}/${tab}`);
     };
-    row.addEventListener('click', openProperty);
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('a, button')) return;
+      openProperty();
+    });
     row.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
@@ -3763,14 +4726,15 @@ function setupCsvUpload() {
 
   const handleFile = (file) => {
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      processCsvText(event.target.result);
-    };
-    reader.readAsText(file);
+    input.value = '';
+    triggerDemoBulkImport();
   };
 
   input.addEventListener('change', () => handleFile(input.files[0]));
+  zone.addEventListener('click', (e) => {
+    if (e.target.closest('label[for="csv-input"]')) return;
+    input.click();
+  });
   zone.addEventListener('dragover', (e) => {
     e.preventDefault();
     zone.classList.add('dragover');
@@ -3779,7 +4743,7 @@ function setupCsvUpload() {
   zone.addEventListener('drop', (e) => {
     e.preventDefault();
     zone.classList.remove('dragover');
-    handleFile(e.dataTransfer.files[0]);
+    handleFile(e.dataTransfer.files[0] || { name: 'portfolio.csv' });
   });
 }
 
@@ -3801,6 +4765,19 @@ function bindCommonActions() {
     saveState(state);
     navigate('/login');
   });
+
+  document.querySelector('[data-action="add-investor-club"]')?.addEventListener('click', () => {
+    marketplaceInvestorClubFilter = 'investor-club';
+    navigate('/portfolio/marketplace');
+  });
+
+  document.querySelectorAll('[data-action="quote-next-steps"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      button.hidden = true;
+      const confirmation = button.closest('.quote-summary__actions')?.querySelector('[data-quote-confirmation]');
+      if (confirmation) confirmation.hidden = false;
+    });
+  });
 }
 
 function escapeHtml(str) {
@@ -3812,6 +4789,8 @@ function escapeHtml(str) {
 }
 
 function render() {
+  window.scrollTo(0, 0);
+
   if (!state.accessGranted) {
     renderAccessGate();
     return;

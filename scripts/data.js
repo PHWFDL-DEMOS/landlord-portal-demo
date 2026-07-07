@@ -342,11 +342,16 @@ export function computePortfolioMetricsAfterPurchase(properties, listing, quote)
     street: listing.street,
     city: listing.city,
     avmValue: listing.askingPrice,
+    purchasePrice: String(listing.askingPrice),
+    purchaseDate: new Date().toISOString().slice(0, 10),
     marketRent: listing.marketRent,
-    rentAgreed: listing.marketRent,
-    mortgageBalance: quote.loanAmount,
+    rentAgreed: String(listing.marketRent),
+    mortgageBalance: String(quote.loanAmount),
     interestRate: String(quote.interestRate),
     monthlyPayments: String(quote.monthlyPayment),
+    mortgageProvider: 'ACME Mortgages',
+    mortgageProductType: 'Fixed rate',
+    mortgageEndDate: '02/2031',
     occupancy: 'Vacant',
   };
 
@@ -877,7 +882,7 @@ export function getDefaultEpcDetails(property, { highlightDemo = false } = {}) {
 }
 
 export function getPropertyEpcDetails(property, { propertyIndex } = {}) {
-  const highlightDemo = propertyIndex === 2;
+  const highlightDemo = propertyIndex === 0;
   const defaults = getDefaultEpcDetails(property, { highlightDemo });
   const currentRating = String(property.epcRating || defaults.currentRating).trim().toUpperCase();
   const potentialRating = String(property.epcPotential || defaults.potentialRating).trim().toUpperCase();
@@ -890,7 +895,7 @@ export function getPropertyEpcDetails(property, { propertyIndex } = {}) {
 }
 
 export function ensurePropertyEpcBasics(property, propertyIndex) {
-  if (propertyIndex !== 2) return false;
+  if (propertyIndex !== 0) return false;
   if (String(property.epcRating || '').trim()) return false;
 
   const defaults = getDefaultEpcDetails(property, { highlightDemo: true });
@@ -902,6 +907,71 @@ export function ensurePropertyEpcBasics(property, propertyIndex) {
 export function hasEpcImprovementOpportunity(property, { propertyIndex } = {}) {
   const { currentRating } = getPropertyEpcDetails(property, { propertyIndex });
   return POOR_EPC_RATINGS.includes(currentRating);
+}
+
+export function countPropertyOptimisationOpportunities(property) {
+  let count = 0;
+  if (hasRefinanceOpportunity(property)) count += 1;
+  if (hasMortgageRenewalOpportunity(property)) count += 1;
+  if (hasRentReviewOpportunity(property)) count += 1;
+  return count;
+}
+
+export function getPropertyEnvironmentalRisks(property, { propertyIndex } = {}) {
+  const seed = propertySeedLength(property);
+  const risks = [
+    { label: 'Flood - River Sea', level: ['low', 'low', 'medium', 'high'][seed % 4] },
+    { label: 'Flood - Surface Water', level: ['low', 'medium', 'medium', 'low'][(seed + 1) % 4] },
+    { label: 'Chancel Liability', level: ['low', 'low', 'low', 'medium'][(seed + 2) % 4] },
+    { label: 'Subsidence', level: ['low', 'medium', 'low', 'low'][(seed + 3) % 4] },
+    { label: 'Cladding', level: ['low', 'low', 'low', 'medium'][seed % 4] },
+  ];
+
+  if (propertyIndex === 0) {
+    return risks.map((risk) => {
+      if (risk.label === 'Flood - River Sea') {
+        return { ...risk, previousLevel: 'low', level: 'high' };
+      }
+      if (risk.label === 'Subsidence') {
+        return { ...risk, previousLevel: 'low' };
+      }
+      return risk;
+    });
+  }
+
+  return risks;
+}
+
+const RISK_LEVEL_ORDER = { low: 0, medium: 1, high: 2 };
+
+export function isRiskWorsened(previousLevel, currentLevel) {
+  const previous = RISK_LEVEL_ORDER[previousLevel];
+  const current = RISK_LEVEL_ORDER[currentLevel];
+  if (previous == null || current == null) return false;
+  return current > previous;
+}
+
+export function hasEnvironmentalRiskAlert(property, propertyIndex) {
+  return getPropertyEnvironmentalRisks(property, { propertyIndex }).some(
+    (risk) => risk.previousLevel && isRiskWorsened(risk.previousLevel, risk.level),
+  );
+}
+
+export function countPropertyAlerts(property, propertyIndex) {
+  let count = 0;
+  if (hasEpcImprovementOpportunity(property, { propertyIndex })) count += 1;
+  if (hasEnvironmentalRiskAlert(property, propertyIndex)) count += 1;
+  return count;
+}
+
+export function getPropertyAlertRoute(property, propertyIndex) {
+  if (hasEpcImprovementOpportunity(property, { propertyIndex })) {
+    return `#/portfolio/property/${propertyIndex}/esg`;
+  }
+  if (hasEnvironmentalRiskAlert(property, propertyIndex)) {
+    return `#/portfolio/property/${propertyIndex}/risk`;
+  }
+  return null;
 }
 
 export function buildEpcImprovementQuote(property, { propertyIndex } = {}) {
@@ -937,7 +1007,7 @@ export function getPortfolioEpcImprovementOpportunities(properties) {
       quote: buildEpcImprovementQuote(property, { propertyIndex: index }),
     }));
 
-  const preferred = qualifying.find((item) => item.index === 2);
+  const preferred = qualifying.find((item) => item.index === 0);
   return preferred ? [preferred] : qualifying.slice(0, 1);
 }
 
@@ -1254,6 +1324,37 @@ export function hasDisplayValue(value) {
   return String(value).trim() !== '';
 }
 
+const LETTING_AGENTS = [
+  'Marsh & Co Lettings',
+  'Marsh & Co Lettings',
+  'Northgate Property Management',
+];
+
+export function getPropertyLettingAgent(propertyIndex) {
+  return LETTING_AGENTS[propertyIndex % LETTING_AGENTS.length] || 'Independent Lettings';
+}
+
+export function computePropertyDataCompleteness(property) {
+  const fields = [
+    property.titleRef,
+    property.postcode,
+    property.propertyNumber,
+    property.street,
+    property.city,
+    property.avmValue,
+    property.marketRent,
+    property.mortgageBalance,
+    property.interestRate,
+    property.mortgageProvider,
+    property.mortgageEndDate,
+    property.purchasePrice,
+    property.rentAgreed || property.monthlyRent,
+    property.occupancy,
+  ];
+  const filled = fields.filter(hasDisplayValue).length;
+  return Math.round((filled / fields.length) * 100);
+}
+
 export function formatCurrency(value) {
   const num = Number(String(value).replace(/[^0-9.]/g, ''));
   if (!num) return '—';
@@ -1295,6 +1396,17 @@ function computePortfolioValueChange3m(properties, totalPortfolioValue) {
   return { amount, pct };
 }
 
+/** Five-year portfolio value trend ending at the current total (wavy but upward for demo). */
+export function computePortfolioValueTrend5y(totalPortfolioValue) {
+  const current = Math.max(Number(totalPortfolioValue) || 0, 1);
+  const currentYear = new Date().getFullYear();
+  const relative = [0.7, 0.76, 0.73, 0.81, 1];
+  return relative.map((factor, index) => ({
+    label: String(currentYear - 4 + index),
+    value: Math.round(current * factor),
+  }));
+}
+
 export function formatRatio(value) {
   if (value == null || Number.isNaN(value) || !Number.isFinite(value)) return '—';
   return `${value.toFixed(2)}x`;
@@ -1320,8 +1432,16 @@ export function computePortfolioMetrics(properties) {
       hasRentAgreed = true;
       totalRentAgreed += agreed;
     }
-    totalMortgageBalance += Number(property.mortgageBalance) || 0;
-    totalMortgageMonthly += Number(property.monthlyPayments) || 0;
+    totalMortgageBalance += Number(String(property.mortgageBalance).replace(/[^0-9.]/g, '')) || 0;
+    let monthlyPayment = Number(String(property.monthlyPayments).replace(/[^0-9.]/g, '')) || 0;
+    if (monthlyPayment <= 0) {
+      const balance = Number(String(property.mortgageBalance).replace(/[^0-9.]/g, '')) || 0;
+      const rate = Number(String(property.interestRate).replace(/[^0-9.]/g, '')) || 0;
+      if (balance > 0 && rate > 0) {
+        monthlyPayment = Math.round(balance * (rate / 100 / 12));
+      }
+    }
+    totalMortgageMonthly += monthlyPayment;
     if (isPropertyOccupied(property)) occupiedCount += 1;
   });
 
@@ -1346,6 +1466,7 @@ export function computePortfolioMetrics(properties) {
     ? (equityBasisMortgage / equityBasisValue) * 100
     : null;
   const portfolioValueChange3m = computePortfolioValueChange3m(enriched, totalPortfolioValue);
+  const portfolioValueTrend5y = computePortfolioValueTrend5y(totalPortfolioValue);
 
   return {
     totalProperties: count,
@@ -1363,6 +1484,7 @@ export function computePortfolioMetrics(properties) {
     grossYield,
     icr,
     portfolioValueChange3m,
+    portfolioValueTrend5y,
     properties: enriched,
   };
 }
